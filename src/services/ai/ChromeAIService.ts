@@ -12,11 +12,13 @@ export class ChromeAIService {
     }
 
     private getFactory(): AILanguageModelFactory {
+        // Prefer window.ai.languageModel as it is the most standard path
+        if (typeof window !== 'undefined' && window.ai && window.ai.languageModel) {
+            return window.ai.languageModel;
+        }
+        // Fallback to global LanguageModel if available
         if (typeof LanguageModel !== 'undefined') {
             return LanguageModel;
-        }
-        if (window.ai && window.ai.languageModel) {
-            return window.ai.languageModel;
         }
         throw new Error("LanguageModel API not supported in this browser");
     }
@@ -24,6 +26,10 @@ export class ChromeAIService {
     public async isAvailable(): Promise<{ available: boolean, status: 'readily' | 'after-download' | 'no' }> {
         try {
             const factory = this.getFactory();
+            if (typeof factory.capabilities !== 'function') {
+                // If capabilities is missing, assume it might be available if the factory exists
+                return { available: true, status: 'readily' };
+            }
             const caps = await factory.capabilities();
             return {
                 available: caps.available !== 'no',
@@ -38,11 +44,40 @@ export class ChromeAIService {
     public async createSession(options?: AILanguageModelCreateOptions): Promise<AILanguageModel> {
         try {
             const factory = this.getFactory();
-            // Merge default language with provided options
+
+            // Safe capability fetching
+            let defaultTemp = 1.0;
+            let defaultTopK = 3;
+            try {
+                if (typeof factory.capabilities === 'function') {
+                    const caps = await factory.capabilities();
+                    defaultTemp = caps.defaultTemperature ?? defaultTemp;
+                    defaultTopK = caps.defaultTopK ?? defaultTopK;
+                }
+            } catch (e) {
+                console.warn("Could not fetch model capabilities, using fallbacks", e);
+            }
+
+            // Strictly enforce language to avoid API warnings
             const sessionOptions: AILanguageModelCreateOptions = {
-                language: 'en', // Default to English
-                ...options
+                ...options,
+                language: options?.language || 'en'
             };
+
+            // AI API Constraint: must specify both topK and temperature, or neither.
+            if (sessionOptions.temperature !== undefined || sessionOptions.topK !== undefined) {
+                if (sessionOptions.temperature === undefined) {
+                    sessionOptions.temperature = defaultTemp;
+                }
+                if (sessionOptions.topK === undefined) {
+                    sessionOptions.topK = defaultTopK;
+                }
+            }
+
+            console.log("Creating AI session with options:", {
+                ...sessionOptions,
+                systemPrompt: sessionOptions.systemPrompt ? '(omitted)' : undefined
+            });
             const session = await factory.create(sessionOptions);
             return session;
         } catch (e) {

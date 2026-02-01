@@ -70,42 +70,30 @@ export class Orchestrator {
         }
 
         while (attempt < 2) {
-            const routerPrompt = `
-You are the Orchestrator. Your job is to route the user's request to the most appropriate agent.
+            const routerPrompt = `Task: Route the user request to the correct agent.
+Response format: Valid JSON only.
 
 Available Agents:
 ${agentList}
 
 User Request: "${message}"
 
-CRITICAL INSTRUCTIONS:
-1. Read the user's request carefully
-2. Look at each agent's name and description
-3. Match keywords in the request to agent names/descriptions
-4. ALWAYS pick an agent if there's even a slight match
-5. Only use "None" if the request is completely unrelated to all agents
-6. Return ONLY valid JSON, no markdown, no extra text
+Your response must be a single JSON object in this format:
+{"agentName": "Name of Agent", "task": "Request for agent"}
 
-JSON FORMAT (copy this exactly):
-{"agentName": "exact name from list", "task": "user request"}
+Guidelines:
+- Choose from the list of available agents.
+- If no agent is suitable, use "None" as the agentName.
+- Output ONLY the JSON. No conversational text.
+${lastError ? `\nNote: Last attempt failed because: ${lastError}` : ""}
 
-EXAMPLES:
-Request: "Summarize this text: hello world"
-Agents: ["Summarize Agent", "Code Helper"]
-Response: {"agentName": "Summarize Agent", "task": "Summarize this text: hello world"}
+JSON:`;
 
-Request: "Generate a name for my project"
-Agents: ["Name Generator Agent", "Summarize Agent"]
-Response: {"agentName": "Name Generator Agent", "task": "Generate a name for my project"}
-
-Request: "Help me code"
-Agents: ["Code Helper", "Math Solver"]
-Response: {"agentName": "Code Helper", "task": "Help me code"}
-${lastError ? `\n\n⚠️ ERROR: ${lastError}\nFIX IT NOW. Return valid JSON only.` : ""}
-`;
-
-            const routerSession = await this.ai.createSession({ systemPrompt: routerPrompt });
-            const routerResponseRaw = await this.ai.generate("Return the JSON routing decision now:", routerSession);
+            const routerSession = await this.ai.createSession({
+                language: 'en',
+                temperature: 0.1
+            });
+            const routerResponseRaw = await this.ai.generate(routerPrompt, routerSession);
             routerSession.destroy();
 
             console.log("Router Response:", routerResponseRaw);
@@ -118,7 +106,7 @@ ${lastError ? `\n\n⚠️ ERROR: ${lastError}\nFIX IT NOW. Return valid JSON onl
                 break;
             } else {
                 console.warn("Router returned invalid JSON", routerResponseRaw);
-                lastError = "Invalid JSON format. Response was: " + routerResponseRaw.substring(0, 100);
+                lastError = "Invalid JSON format. Please return ONLY the JSON object shown in the format above.";
                 attempt++;
             }
         }

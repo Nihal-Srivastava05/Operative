@@ -53,7 +53,10 @@ export class AgentRunner {
 
         // 2. Create Session
         const systemPrompt = await this.constructSystemPrompt(agent, tools);
-        const session = await this.ai.createSession({ systemPrompt });
+        const session = await this.ai.createSession({
+            systemPrompt,
+            language: 'en' // Specify output language to ensure optimal quality
+        });
 
         console.log(`[${agent.name}] Starting execution with task: ${task.substring(0, 100)}...`);
 
