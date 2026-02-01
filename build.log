@@ -1,0 +1,16 @@
+
+> operative@1.0.0 build
+> tsc && vite build
+
+src/App.tsx(1,8): error TS6133: 'React' is declared but its value is never read.
+src/App.tsx(2,23): error TS6133: 'Zap' is declared but its value is never read.
+src/App.tsx(2,43): error TS6133: 'Plus' is declared but its value is never read.
+src/background/index.ts(1,1): error TS6133: 'openDB' is declared but its value is never read.
+src/components/AgentEditor.tsx(1,8): error TS6133: 'React' is declared but its value is never read.
+src/components/AgentList.tsx(1,8): error TS6133: 'React' is declared but its value is never read.
+src/components/Settings.tsx(1,8): error TS6133: 'React' is declared but its value is never read.
+src/components/Settings.tsx(2,26): error TS6133: 'SettingsType' is declared but its value is never read.
+src/services/ai/gemini.ts(56,13): error TS6133: 'previousChunk' is declared but its value is never read.
+src/services/mcp/McpClient.ts(1,1): error TS6133: 'uuidv4' is declared but its value is never read.
+src/services/orchestrator/Orchestrator.ts(1,14): error TS6133: 'Agent' is declared but its value is never read.
+src/services/orchestrator/types.ts(1,1): error TS6133: 'Agent' is declared but its value is never read.

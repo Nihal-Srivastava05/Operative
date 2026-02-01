@@ -1,0 +1,30 @@
+{
+    "manifest_version": 3,
+    "name": "Operative",
+    "version": "1.0.0",
+    "description": "Multi-agent system orchestrator for Chrome using Gemini Nano",
+    "permissions": [
+        "storage",
+        "sidePanel"
+    ],
+    "host_permissions": [
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "src/background/index.ts",
+        "type": "module"
+    },
+    "side_panel": {
+        "default_path": "index.html"
+    },
+    "action": {
+        "default_title": "Open Operative",
+        "default_icon": "icon-128.png"
+    },
+    "icons": {
+        "128": "icon-128.png"
+    },
+    "content_security_policy": {
+        "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+    }
+}

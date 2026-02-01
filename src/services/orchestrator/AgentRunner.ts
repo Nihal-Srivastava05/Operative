@@ -1,0 +1,103 @@
+import { ChromeAIService } from '../ai/ChromeAIService';
+import { Agent } from '../../store/db';
+import { McpClient } from '../mcp/McpClient';
+
+export class AgentRunner {
+    private ai: ChromeAIService;
+
+    constructor() {
+        this.ai = ChromeAIService.getInstance();
+    }
+
+    private async constructSystemPrompt(agent: Agent, tools: any[]): Promise<string> {
+        let prompt = agent.systemPrompt + "\n";
+
+        if (tools.length > 0) {
+            prompt += "\nYou have access to the following tools via the Model Context Protocol:\n";
+            prompt += JSON.stringify(tools, null, 2);
+            prompt += "\n\nTo use a tool, you MUST reply with a JSON object in this format:\n";
+            prompt += `{"tool": "tool_name", "arguments": { ... }}`;
+            prompt += "\nIf you do not need to use a tool, just reply normally.";
+        }
+
+        return prompt;
+    }
+
+    public async run(agent: Agent, task: string, mcpClients: Map<string, McpClient>): Promise<string> {
+        // 1. Gather tools
+        let tools: any[] = [];
+        if (agent.assignedTool) {
+            const client = mcpClients.get(agent.assignedTool.serverId);
+            if (client) {
+                // We might cache tools or fetch them. For now assume we fetch.
+                // Ideally we should list tools once and store. 
+                // For this MVP, let's assume we fetch or have them passed.
+                // To keep it simple, we'll just skip listTools for now and assume the agent knows the tool if explicitly assigned,
+                // OR we implement a tool discovery cache.
+                try {
+                    const serverTools = await client.listTools();
+                    // Filter if specific tool assigned? The requirement says "option to configure tools", "For each agent only one tool can be connected".
+                    // So we filter.
+                    const t = serverTools.find(t => t.name === agent.assignedTool!.toolName);
+                    if (t) tools.push(t);
+                } catch (e) {
+                    console.error("Failed to fetch tools", e);
+                }
+            }
+        }
+
+        // 2. Create Session
+        const systemPrompt = await this.constructSystemPrompt(agent, tools);
+        const session = await this.ai.createSession({ systemPrompt });
+
+        // 3. Prompt
+        let response = await this.ai.generate(task, session);
+
+        // 4. Check for Tool Call (Basic JSON detection)
+        // Basic loop: 
+        // Model -> JSON -> Execute -> Model -> Final Answer
+        // Limit loop to avoid infinite.
+
+        let maxTurns = 3;
+        let currentTurn = 0;
+
+        while (currentTurn < maxTurns) {
+            try {
+                // Flexible JSON parsing
+                const jsonMatch = response.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    const potentialJson = JSON.parse(jsonMatch[0]);
+                    if (potentialJson.tool && potentialJson.arguments) {
+                        // It's a tool call
+                        console.log(`[${agent.name}] Calling tool:`, potentialJson.tool);
+
+                        // Execute
+                        // Need the client again
+                        if (agent.assignedTool && mcpClients.has(agent.assignedTool.serverId)) {
+                            const client = mcpClients.get(agent.assignedTool.serverId)!;
+                            const result = await client.callTool(potentialJson.tool, potentialJson.arguments);
+
+                            // Feed back
+                            const toolOutput = `Tool '${potentialJson.tool}' output: ${JSON.stringify(result)}`;
+                            response = await this.ai.generate(toolOutput, session);
+                            currentTurn++;
+                            continue;
+                        } else {
+                            response += "\nError: Tool execution failed (Client not found).";
+                            break;
+                        }
+                    }
+                }
+            } catch (e) {
+                // Not JSON or parse error, assume text response
+            }
+
+            // If we get here, it wasn't a tool call or we processed it. 
+            // If it wasn't a tool call, we are done.
+            break;
+        }
+
+        session.destroy();
+        return response;
+    }
+}
