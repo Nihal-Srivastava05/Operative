@@ -26,6 +26,7 @@ declare global {
         systemPrompt?: string;
         temperature?: number;
         topK?: number;
+        language?: string; // Output language code (e.g., 'en', 'es', 'ja')
         monitor?: (monitor: AILanguageModelMonitor) => void;
         signal?: AbortSignal;
     }

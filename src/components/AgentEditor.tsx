@@ -12,7 +12,6 @@ interface AgentEditorProps {
 export function AgentEditor({ agent, onClose }: AgentEditorProps) {
     const [name, setName] = useState(agent?.name || '');
     const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt || '');
-    const [type, setType] = useState<'orchestrator' | 'worker'>('worker');
     const [assignedTool, setAssignedTool] = useState<{ serverId: string, toolName: string } | null>(agent?.assignedTool || null);
 
     const [availableTools, setAvailableTools] = useState<{ serverId: string, toolName: string }[]>([]);
@@ -31,7 +30,7 @@ export function AgentEditor({ agent, onClose }: AgentEditorProps) {
         const agentData: any = {
             name,
             systemPrompt,
-            type,
+            type: 'worker', // All user-created agents are workers
             assignedTool: assignedTool || undefined,
             enabled: agent ? agent.enabled : true,
         };
@@ -68,18 +67,7 @@ export function AgentEditor({ agent, onClose }: AgentEditorProps) {
                     />
                 </div>
 
-                {/* Type Selection */}
-                <div>
-                    <label className="block text-sm font-medium text-slate-400 mb-1">Type</label>
-                    <select
-                        value={type}
-                        onChange={e => setType(e.target.value as any)}
-                        className="w-full bg-slate-800 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-indigo-500 outline-none"
-                    >
-                        <option value="worker">Worker Agent</option>
-                        <option value="orchestrator">Orchestrator</option>
-                    </select>
-                </div>
+                {/* Type is always 'worker' for user-created agents - Orchestrator is built-in */}
 
                 {/* Tool Selection */}
                 <div>

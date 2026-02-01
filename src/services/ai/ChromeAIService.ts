@@ -38,7 +38,12 @@ export class ChromeAIService {
     public async createSession(options?: AILanguageModelCreateOptions): Promise<AILanguageModel> {
         try {
             const factory = this.getFactory();
-            const session = await factory.create(options);
+            // Merge default language with provided options
+            const sessionOptions: AILanguageModelCreateOptions = {
+                language: 'en', // Default to English
+                ...options
+            };
+            const session = await factory.create(sessionOptions);
             return session;
         } catch (e) {
             console.error("Failed to create LanguageModel session", e);

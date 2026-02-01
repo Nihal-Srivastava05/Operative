@@ -1,6 +1,7 @@
 import { ChromeAIService } from '../ai/ChromeAIService';
 import { Agent } from '../../store/db';
 import { McpClient } from '../mcp/McpClient';
+import { extractJson } from '../../utils/jsonUtils';
 
 export class AgentRunner {
     private ai: ChromeAIService;
@@ -13,11 +14,15 @@ export class AgentRunner {
         let prompt = agent.systemPrompt + "\n";
 
         if (tools.length > 0) {
-            prompt += "\nYou have access to the following tools via the Model Context Protocol:\n";
+            prompt += "\n=== AVAILABLE TOOLS ===\n";
+            prompt += "You have access to the following tools via the Model Context Protocol:\n";
             prompt += JSON.stringify(tools, null, 2);
-            prompt += "\n\nTo use a tool, you MUST reply with a JSON object in this format:\n";
-            prompt += `{"tool": "tool_name", "arguments": { ... }}`;
-            prompt += "\nIf you do not need to use a tool, just reply normally.";
+            prompt += "\n\n=== HOW TO USE TOOLS ===\n";
+            prompt += "To use a tool, respond with ONLY a JSON object in this exact format:\n";
+            prompt += `{"tool": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}\n`;
+            prompt += "\nDo NOT include any markdown formatting or explanation.\n";
+            prompt += "If you don't need a tool, respond normally with text.\n";
+            prompt += "After using a tool, you'll receive the result and can then provide your final answer.\n";
         }
 
         return prompt;
@@ -50,6 +55,8 @@ export class AgentRunner {
         const systemPrompt = await this.constructSystemPrompt(agent, tools);
         const session = await this.ai.createSession({ systemPrompt });
 
+        console.log(`[${agent.name}] Starting execution with task: ${task.substring(0, 100)}...`);
+
         // 3. Prompt
         let response = await this.ai.generate(task, session);
 
@@ -64,28 +71,25 @@ export class AgentRunner {
         while (currentTurn < maxTurns) {
             try {
                 // Flexible JSON parsing
-                const jsonMatch = response.match(/\{[\s\S]*\}/);
-                if (jsonMatch) {
-                    const potentialJson = JSON.parse(jsonMatch[0]);
-                    if (potentialJson.tool && potentialJson.arguments) {
-                        // It's a tool call
-                        console.log(`[${agent.name}] Calling tool:`, potentialJson.tool);
+                const potentialJson = extractJson(response);
+                if (potentialJson && potentialJson.tool && potentialJson.arguments) {
+                    // It's a tool call
+                    console.log(`[${agent.name}] Calling tool:`, potentialJson.tool);
 
-                        // Execute
-                        // Need the client again
-                        if (agent.assignedTool && mcpClients.has(agent.assignedTool.serverId)) {
-                            const client = mcpClients.get(agent.assignedTool.serverId)!;
-                            const result = await client.callTool(potentialJson.tool, potentialJson.arguments);
+                    // Execute
+                    // Need the client again
+                    if (agent.assignedTool && mcpClients.has(agent.assignedTool.serverId)) {
+                        const client = mcpClients.get(agent.assignedTool.serverId)!;
+                        const result = await client.callTool(potentialJson.tool, potentialJson.arguments);
 
-                            // Feed back
-                            const toolOutput = `Tool '${potentialJson.tool}' output: ${JSON.stringify(result)}`;
-                            response = await this.ai.generate(toolOutput, session);
-                            currentTurn++;
-                            continue;
-                        } else {
-                            response += "\nError: Tool execution failed (Client not found).";
-                            break;
-                        }
+                        // Feed back
+                        const toolOutput = `Tool '${potentialJson.tool}' output: ${JSON.stringify(result)}`;
+                        response = await this.ai.generate(toolOutput, session);
+                        currentTurn++;
+                        continue;
+                    } else {
+                        response += "\nError: Tool execution failed (Client not found).";
+                        break;
                     }
                 }
             } catch (e) {
@@ -98,6 +102,7 @@ export class AgentRunner {
         }
 
         session.destroy();
+        console.log(`[${agent.name}] Completed. Response length: ${response.length} chars`);
         return response;
     }
 }

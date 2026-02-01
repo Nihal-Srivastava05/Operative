@@ -4,7 +4,7 @@ import { Orchestrator } from '../services/orchestrator/Orchestrator';
 
 export function Chat() {
     const [input, setInput] = useState('');
-    const [messages, setMessages] = useState<{ role: 'user' | 'model', content: string }[]>([]);
+    const [messages, setMessages] = useState<{ role: 'user' | 'model', content: string, agentName?: string }[]>([]);
     const [loading, setLoading] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -19,10 +19,10 @@ export function Chat() {
         setLoading(true);
 
         try {
-            const response = await orchestrator.handleUserMessage(userMsg);
-            setMessages(prev => [...prev, { role: 'model', content: response }]);
+            const { response, agentName } = await orchestrator.handleUserMessage(userMsg);
+            setMessages(prev => [...prev, { role: 'model', content: response, agentName }]);
         } catch (e) {
-            setMessages(prev => [...prev, { role: 'model', content: `Error: ${e}` }]);
+            setMessages(prev => [...prev, { role: 'model', content: `Error: ${e}`, agentName: 'System' }]);
         } finally {
             setLoading(false);
         }
@@ -44,8 +44,16 @@ export function Chat() {
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {messages.map((m, i) => (
                     <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[85%] rounded-lg p-3 text-sm whitespace-pre-wrap ${m.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-200'}`}>
-                            {m.content}
+                        <div className={`max-w-[85%] rounded-lg p-3 text-sm ${m.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-200'}`}>
+                            {m.role === 'model' && m.agentName && (
+                                <div className="text-xs font-semibold text-indigo-400 mb-1.5 flex items-center gap-1">
+                                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                                    {m.agentName}
+                                </div>
+                            )}
+                            <div className="whitespace-pre-wrap">
+                                {m.content}
+                            </div>
                         </div>
                     </div>
                 ))}

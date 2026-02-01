@@ -45,6 +45,11 @@ export function AgentList({ onEdit, onCreate }: AgentListProps) {
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-3">
+                {/* Info message about orchestrator */}
+                <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-xs text-slate-400">
+                    <span className="text-indigo-400 font-semibold">ℹ️ Note:</span> The Orchestrator is built-in and automatically routes your requests to the appropriate worker agents below.
+                </div>
+
                 {agents.map(agent => (
                     <div key={agent.id} className="bg-slate-800 p-3 rounded-lg border border-slate-700 flex flex-col gap-2">
                         <div className="flex justify-between items-start">
@@ -82,7 +87,10 @@ export function AgentList({ onEdit, onCreate }: AgentListProps) {
                     </div>
                 ))}
                 {agents.length === 0 && (
-                    <div className="text-center text-slate-500 mt-10">No agents found. Create one!</div>
+                    <div className="text-center text-slate-500 mt-10">
+                        <p className="mb-2">No worker agents yet.</p>
+                        <p className="text-xs">Create specialized agents to handle different tasks!</p>
+                    </div>
                 )}
             </div>
         </div>
