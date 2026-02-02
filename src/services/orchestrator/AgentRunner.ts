@@ -9,7 +9,7 @@ export class AgentRunner {
         this.ai = ChromeAIService.getInstance();
     }
 
-    private async constructSystemPrompt(agent: Agent, tools: any[]): Promise<string> {
+    private constructSystemPrompt(agent: Agent, tools: any[]): string {
         let prompt = agent.systemPrompt + "\n";
 
         if (tools.length > 0) {
@@ -29,15 +29,8 @@ export class AgentRunner {
         if (agent.assignedTool) {
             const client = mcpClients.get(agent.assignedTool.serverId);
             if (client) {
-                // We might cache tools or fetch them. For now assume we fetch.
-                // Ideally we should list tools once and store. 
-                // For this MVP, let's assume we fetch or have them passed.
-                // To keep it simple, we'll just skip listTools for now and assume the agent knows the tool if explicitly assigned,
-                // OR we implement a tool discovery cache.
                 try {
                     const serverTools = await client.listTools();
-                    // Filter if specific tool assigned? The requirement says "option to configure tools", "For each agent only one tool can be connected".
-                    // So we filter.
                     const t = serverTools.find(t => t.name === agent.assignedTool!.toolName);
                     if (t) tools.push(t);
                 } catch (e) {
@@ -46,40 +39,30 @@ export class AgentRunner {
             }
         }
 
-        // 2. Create Session
-        const systemPrompt = await this.constructSystemPrompt(agent, tools);
-        const session = await this.ai.createSession({ systemPrompt });
+        // 2. Build system prompt
+        const systemPrompt = this.constructSystemPrompt(agent, tools);
 
-        // 3. Prompt
-        let response = await this.ai.generate(task, session);
+        // 3. Generate response (works in both service worker and extension page contexts)
+        let response = await this.ai.generateWithSystem(task, systemPrompt);
 
         // 4. Check for Tool Call (Basic JSON detection)
-        // Basic loop: 
-        // Model -> JSON -> Execute -> Model -> Final Answer
-        // Limit loop to avoid infinite.
-
         let maxTurns = 3;
         let currentTurn = 0;
 
         while (currentTurn < maxTurns) {
             try {
-                // Flexible JSON parsing
                 const jsonMatch = response.match(/\{[\s\S]*\}/);
                 if (jsonMatch) {
                     const potentialJson = JSON.parse(jsonMatch[0]);
                     if (potentialJson.tool && potentialJson.arguments) {
-                        // It's a tool call
                         console.log(`[${agent.name}] Calling tool:`, potentialJson.tool);
 
-                        // Execute
-                        // Need the client again
                         if (agent.assignedTool && mcpClients.has(agent.assignedTool.serverId)) {
                             const client = mcpClients.get(agent.assignedTool.serverId)!;
                             const result = await client.callTool(potentialJson.tool, potentialJson.arguments);
 
-                            // Feed back
                             const toolOutput = `Tool '${potentialJson.tool}' output: ${JSON.stringify(result)}`;
-                            response = await this.ai.generate(toolOutput, session);
+                            response = await this.ai.generateWithSystem(toolOutput, systemPrompt);
                             currentTurn++;
                             continue;
                         } else {
@@ -92,12 +75,9 @@ export class AgentRunner {
                 // Not JSON or parse error, assume text response
             }
 
-            // If we get here, it wasn't a tool call or we processed it. 
-            // If it wasn't a tool call, we are done.
             break;
         }
 
-        session.destroy();
         return response;
     }
 }

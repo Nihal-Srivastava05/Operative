@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Operative Offscreen Agent</title>
+</head>
+<body>
+    <!-- This is an offscreen document for background agent processing -->
+    <!-- It has no visible UI but runs agent logic -->
+
+    <script type="module">
+        import { createAgentContext, parseAgentParams } from './src/runtime/lifecycle/AgentContext';
+        import { ChromeAIService } from './src/services/ai/ChromeAIService';
+
+        let agentContext = null;
+
+        async function initializeAgent(params) {
+            console.log('[Offscreen] Initializing agent with params:', params);
+
+            try {
+                const context = await createAgentContext({
+                    agentId: params.agentId,
+                    definitionId: params.definitionId,
+                    contextType: 'offscreen',
+                    config: params.config,
+                });
+
+                // Setup task handler with ChromeAI
+                const ai = ChromeAIService.getInstance();
+
+                context.setTaskHandler(async (taskPayload) => {
+                    console.log('[Offscreen] Processing task:', taskPayload.taskId);
+
+                    const definition = context.getDefinition();
+                    const systemPrompt = definition?.systemPrompt || 'You are a helpful assistant.';
+
+                    const session = await ai.createSession({ systemPrompt });
+                    const result = await ai.generate(taskPayload.task, session);
+                    session.destroy();
+
+                    console.log('[Offscreen] Task completed:', taskPayload.taskId);
+                    return result;
+                });
+
+                agentContext = context;
+                console.log('[Offscreen] Agent initialized:', context.identity.id);
+
+            } catch (error) {
+                console.error('[Offscreen] Failed to initialize agent:', error);
+            }
+        }
+
+        // Check URL params for initial agent
+        const params = parseAgentParams();
+        if (params) {
+            initializeAgent(params);
+        }
+
+        // Listen for additional spawn requests
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (message.type === 'agent:spawn') {
+                initializeAgent({
+                    agentId: message.agentId,
+                    definitionId: message.definitionId,
+                    config: message.config,
+                });
+                sendResponse({ success: true });
+            }
+            return false;
+        });
+
+        console.log('[Offscreen] Offscreen document ready');
+    </script>
+</body>
+</html>

@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Bot, Layers, Zap, MessageSquare, Plus, Settings as SettingsIcon } from 'lucide-react';
+import { Bot, Layers, Zap, MessageSquare, Plus, Settings as SettingsIcon, Users } from 'lucide-react';
 import { AgentList } from './components/AgentList';
 import { AgentEditor } from './components/AgentEditor';
 import { Chat } from './components/Chat';
 import { Settings } from './components/Settings';
+import { MultiAgentPanel } from './components/MultiAgentPanel';
 import { Agent } from './store/db';
 import { Orchestrator } from './services/orchestrator/Orchestrator';
 
-type View = 'chat' | 'agents' | 'settings';
+type View = 'chat' | 'agents' | 'settings' | 'multi-agent';
 
 function App() {
     const [view, setView] = useState<View>('chat');
@@ -53,6 +54,13 @@ function App() {
                         <Bot className="w-4 h-4" />
                     </button>
                     <button
+                        onClick={() => { setView('multi-agent'); setEditingAgent(undefined); }}
+                        className={`p-1.5 rounded-md transition ${view === 'multi-agent' && !editingAgent ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                        title="Multi-Agent"
+                    >
+                        <Users className="w-4 h-4" />
+                    </button>
+                    <button
                         onClick={() => { setView('settings'); setEditingAgent(undefined); }}
                         className={`p-1.5 rounded-md transition ${view === 'settings' && !editingAgent ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
                         title="Settings"
@@ -72,6 +80,8 @@ function App() {
                     </div>
                 ) : view === 'settings' ? (
                     <Settings />
+                ) : view === 'multi-agent' ? (
+                    <MultiAgentPanel />
                 ) : (
                     <Chat />
                 )}

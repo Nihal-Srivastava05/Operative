@@ -1,8 +1,19 @@
+/**
+ * ChromeAIService - Chrome Built-in AI (Gemini Nano) wrapper
+ *
+ * Uses LanguageModel API when available (service worker),
+ * falls back to chrome.runtime.sendMessage for other contexts.
+ */
+
 export class ChromeAIService {
     private static instance: ChromeAIService;
-    private session: AILanguageModel | null = null;
+    private isServiceWorker: boolean;
 
-    private constructor() { }
+    private constructor() {
+        // Check if we're in a service worker context
+        this.isServiceWorker = typeof LanguageModel !== 'undefined';
+        console.log(`[ChromeAI] Context: ${this.isServiceWorker ? 'Service Worker (direct API)' : 'Extension Page (via proxy)'}`);
+    }
 
     public static getInstance(): ChromeAIService {
         if (!ChromeAIService.instance) {
@@ -11,81 +22,100 @@ export class ChromeAIService {
         return ChromeAIService.instance;
     }
 
-    private getFactory(): AILanguageModelFactory {
-        if (typeof LanguageModel !== 'undefined') {
-            return LanguageModel;
-        }
-        if (window.ai && window.ai.languageModel) {
-            return window.ai.languageModel;
-        }
-        throw new Error("LanguageModel API not supported in this browser");
-    }
-
-    public async isAvailable(): Promise<{ available: boolean, status: 'readily' | 'after-download' | 'no' }> {
-        try {
-            const factory = this.getFactory();
-            const caps = await factory.capabilities();
-            return {
-                available: caps.available !== 'no',
-                status: caps.available
-            };
-        } catch (e) {
-            console.error("Error checking LanguageModel availability", e);
-            return { available: false, status: 'no' };
-        }
-    }
-
-    public async createSession(options?: AILanguageModelCreateOptions): Promise<AILanguageModel> {
-        try {
-            const factory = this.getFactory();
-            const session = await factory.create(options);
-            return session;
-        } catch (e) {
-            console.error("Failed to create LanguageModel session", e);
-            throw e;
-        }
-    }
-
-    public async generate(prompt: string, session?: AILanguageModel): Promise<string> {
-        const currentSession = session || this.session;
-        if (!currentSession) {
-            // Try to create a default session if none exists
-            if (!session && !this.session) {
-                this.session = await this.createSession();
-                return await this.session.prompt(prompt);
+    /**
+     * Check if AI is available
+     */
+    public async isAvailable(): Promise<{ available: boolean; status: string }> {
+        if (this.isServiceWorker) {
+            // Direct API access
+            try {
+                const status = await LanguageModel!.availability();
+                return {
+                    available: status === 'available' || status === 'downloadable',
+                    status
+                };
+            } catch (e) {
+                return { available: false, status: 'error' };
             }
-            throw new Error("No active session.");
+        } else {
+            // Via service worker
+            return new Promise((resolve) => {
+                chrome.runtime.sendMessage({ type: 'ai:check' }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        resolve({ available: false, status: 'error' });
+                    } else {
+                        resolve(response || { available: false, status: 'unknown' });
+                    }
+                });
+            });
         }
-        return await currentSession.prompt(prompt);
     }
 
-    public async *generateStream(prompt: string, session?: AILanguageModel): AsyncGenerator<string> {
-        const currentSession = session || this.session;
-        if (!currentSession) {
-            // Try to create a default session if none exists
-            if (!session && !this.session) {
-                this.session = await this.createSession();
-                // Recursively call with the new session
-                // return this.generateStream(prompt, this.session);
-                // Generators are tricky to recurse, let's just use the flow
-            } else {
-                throw new Error("No active session");
-            }
+    /**
+     * Create a session (only works in service worker)
+     */
+    public async createSession(options?: { systemPrompt?: string }): Promise<LanguageModelSession | null> {
+        if (!this.isServiceWorker) {
+            console.log('[ChromeAI] createSession called from non-service-worker context, returning null');
+            return null;
         }
 
-        // Re-check session in case we just created it
-        const sesh = session || this.session!;
+        return await LanguageModel!.create(options);
+    }
 
-        const stream = sesh.promptStreaming(prompt);
-        const reader = stream.getReader();
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                yield value;
-            }
-        } finally {
-            reader.releaseLock();
+    /**
+     * Generate a response
+     */
+    public async generate(prompt: string, session?: any): Promise<string> {
+        if (this.isServiceWorker && session) {
+            // Direct API with existing session
+            return await session.prompt(prompt);
         }
+
+        if (this.isServiceWorker) {
+            // Direct API, create temp session
+            const tempSession = await LanguageModel!.create();
+            const result = await tempSession.prompt(prompt);
+            tempSession.destroy();
+            return result;
+        }
+
+        // Via service worker proxy
+        return this.promptViaProxy(prompt);
+    }
+
+    /**
+     * Generate with system prompt
+     */
+    public async generateWithSystem(prompt: string, systemPrompt: string): Promise<string> {
+        if (this.isServiceWorker) {
+            const session = await LanguageModel!.create({ systemPrompt });
+            const result = await session.prompt(prompt);
+            session.destroy();
+            return result;
+        }
+
+        // Via service worker proxy
+        return this.promptViaProxy(prompt, systemPrompt);
+    }
+
+    /**
+     * Prompt AI via service worker
+     */
+    private promptViaProxy(prompt: string, systemPrompt?: string): Promise<string> {
+        return new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage(
+                { type: 'ai:prompt', prompt, systemPrompt },
+                (response) => {
+                    if (chrome.runtime.lastError) {
+                        reject(new Error(chrome.runtime.lastError.message));
+                    } else if (response?.success) {
+                        resolve(response.result);
+                    } else {
+                        reject(new Error(response?.error || 'AI request failed'));
+                    }
+                }
+            );
+        });
     }
 }
