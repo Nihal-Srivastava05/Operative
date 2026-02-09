@@ -22,6 +22,8 @@ export class AgentRunner {
             prompt += `{"tool": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}\n`;
             prompt += "\nDo NOT include any markdown formatting or explanation.\n";
             prompt += "If a tool is relevant to the user request, you MUST call it rather than guessing.\n";
+            prompt += "If the user explicitly mentions a tool name, you MUST call that tool.\n";
+            prompt += "The `arguments` object MUST satisfy the tool's `inputSchema`.\n";
             prompt += "After using a tool, you'll receive the result and can then provide your final answer.\n";
         }
 
@@ -29,7 +31,8 @@ export class AgentRunner {
     }
 
     private extractToolCall(response: string): { tool: string; args: any } | null {
-        const potentialJson = extractJson(response);
+        // Normal model output is often conversational; avoid spamming warnings here.
+        const potentialJson = extractJson(response, { logFailure: false });
         if (!potentialJson || typeof potentialJson !== 'object') return null;
 
         // Primary expected shape:
@@ -58,6 +61,11 @@ export class AgentRunner {
         if (toolName !== 'get_time') return false;
         const t = task.toLowerCase();
         return t.includes('time') || t.includes('current time') || t.includes('what time') || t.includes('date');
+    }
+
+    private shouldForceEcho(toolName: string | undefined): boolean {
+        // Demo reliability: if an agent is explicitly wired to `echo`, always allow forcing it.
+        return toolName === 'echo';
     }
 
     public async run(agent: Agent, task: string, mcpClients: Map<string, McpClient>): Promise<string> {
@@ -146,6 +154,23 @@ export class AgentRunner {
                     response = `Current time (from MCP tool): ${result?.now ?? JSON.stringify(result)}`;
                 } catch (e) {
                     response = `Error calling MCP tool get_time: ${String(e)}`;
+                }
+            }
+
+            // Similar safety fallback for the `echo` demo/tooling.
+            // Many models will answer conversationally instead of emitting tool-call JSON; this ensures `echo` still works.
+            if (
+                agent.assignedTool &&
+                tools.length === 1 &&
+                this.shouldForceEcho(agent.assignedTool.toolName) &&
+                mcpClients.has(agent.assignedTool.serverId)
+            ) {
+                try {
+                    const client = mcpClients.get(agent.assignedTool.serverId)!;
+                    const result = await client.callTool('echo', { text: task });
+                    response = `Echo (from MCP tool): ${result?.echoed ?? JSON.stringify(result)}`;
+                } catch (e) {
+                    response = `Error calling MCP tool echo: ${String(e)}`;
                 }
             }
             break;

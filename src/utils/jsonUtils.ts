@@ -2,7 +2,7 @@
  * Attempts to extract and parse JSON from a string.
  * Handles markdown code blocks, surrounding text, and some common JSON errors.
  */
-export function extractJson(text: string): any {
+export function extractJson(text: string, opts?: { logFailure?: boolean }): any {
     if (!text || typeof text !== 'string') {
         return null;
     }
@@ -58,6 +58,8 @@ export function extractJson(text: string): any {
     }
 
     // 5. Fallback: Return null to indicate failure
-    console.warn('Failed to extract JSON from text:', text.substring(0, 100));
+    if (opts?.logFailure ?? true) {
+        console.warn('Failed to extract JSON from text:', text.substring(0, 100));
+    }
     return null;
 }

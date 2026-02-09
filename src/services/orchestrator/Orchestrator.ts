@@ -81,12 +81,13 @@ ${agentList}
 
 User Request: "${message}"
 
-Your response must be a single JSON object in this format:
-{"agentName": "Name of Agent", "task": "Request for agent"}
+Your response must be a single JSON object in this exact shape:
+{"agentName":"<agent name from list OR None>","task":"<the user request rewritten for that agent (or exactly repeat the user request)>"} 
 
 Guidelines:
 - Choose from the list of available agents.
 - If no agent is suitable, use "None" as the agentName.
+- The "task" MUST be actionable and MUST NOT be a placeholder string. If unsure, set "task" to the User Request verbatim.
 - Output ONLY the JSON. No conversational text.
 ${lastError ? `\nNote: Last attempt failed because: ${lastError}` : ""}
 
@@ -101,10 +102,19 @@ JSON:`;
 
             console.log("Router Response:", routerResponseRaw);
 
-            const json = extractJson(routerResponseRaw);
+            const json = extractJson(routerResponseRaw, { logFailure: true });
             if (json && json.agentName) {
                 targetAgentName = json.agentName;
-                task = json.task || message;
+                const proposedTask = typeof json.task === 'string' ? json.task.trim() : '';
+                const placeholder = proposedTask.toLowerCase();
+                task =
+                    proposedTask &&
+                        placeholder !== 'request for agent' &&
+                        placeholder !== 'request for agent:' &&
+                        placeholder !== 'request for the agent' &&
+                        placeholder !== 'request for the agent:'
+                        ? proposedTask
+                        : message;
                 console.log(`Routing to agent: ${targetAgentName}`);
                 break;
             } else {
