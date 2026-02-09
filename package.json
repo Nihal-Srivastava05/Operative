@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "mcp:demo-server": "node scripts/mcp-demo-server.mjs"
   },
   "keywords": [],
   "author": "",

@@ -21,11 +21,43 @@ export class AgentRunner {
             prompt += "To use a tool, respond with ONLY a JSON object in this exact format:\n";
             prompt += `{"tool": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}\n`;
             prompt += "\nDo NOT include any markdown formatting or explanation.\n";
-            prompt += "If you don't need a tool, respond normally with text.\n";
+            prompt += "If a tool is relevant to the user request, you MUST call it rather than guessing.\n";
             prompt += "After using a tool, you'll receive the result and can then provide your final answer.\n";
         }
 
         return prompt;
+    }
+
+    private extractToolCall(response: string): { tool: string; args: any } | null {
+        const potentialJson = extractJson(response);
+        if (!potentialJson || typeof potentialJson !== 'object') return null;
+
+        // Primary expected shape:
+        // { tool: string, arguments?: object }
+        const tool =
+            typeof potentialJson.tool === 'string'
+                ? potentialJson.tool
+                : typeof potentialJson.toolName === 'string'
+                    ? potentialJson.toolName
+                    : typeof potentialJson.name === 'string'
+                        ? potentialJson.name
+                        : null;
+
+        if (!tool) return null;
+
+        const args =
+            potentialJson.arguments ??
+            potentialJson.args ??
+            potentialJson.params ??
+            {}; // allow no-args tool calls like {"tool":"get_time"}
+
+        return { tool, args };
+    }
+
+    private shouldForceGetTime(toolName: string | undefined, task: string): boolean {
+        if (toolName !== 'get_time') return false;
+        const t = task.toLowerCase();
+        return t.includes('time') || t.includes('current time') || t.includes('what time') || t.includes('date');
     }
 
     public async run(agent: Agent, task: string, mcpClients: Map<string, McpClient>): Promise<string> {
@@ -73,20 +105,18 @@ export class AgentRunner {
 
         while (currentTurn < maxTurns) {
             try {
-                // Flexible JSON parsing
-                const potentialJson = extractJson(response);
-                if (potentialJson && potentialJson.tool && potentialJson.arguments) {
-                    // It's a tool call
-                    console.log(`[${agent.name}] Calling tool:`, potentialJson.tool);
+                const toolCall = this.extractToolCall(response);
+                if (toolCall) {
+                    console.log(`[${agent.name}] Calling tool:`, toolCall.tool);
 
                     // Execute
                     // Need the client again
                     if (agent.assignedTool && mcpClients.has(agent.assignedTool.serverId)) {
                         const client = mcpClients.get(agent.assignedTool.serverId)!;
-                        const result = await client.callTool(potentialJson.tool, potentialJson.arguments);
+                        const result = await client.callTool(toolCall.tool, toolCall.args);
 
                         // Feed back
-                        const toolOutput = `Tool '${potentialJson.tool}' output: ${JSON.stringify(result)}`;
+                        const toolOutput = `Tool '${toolCall.tool}' output: ${JSON.stringify(result)}`;
                         response = await this.ai.generate(toolOutput, session);
                         currentTurn++;
                         continue;
@@ -101,6 +131,23 @@ export class AgentRunner {
 
             // If we get here, it wasn't a tool call or we processed it. 
             // If it wasn't a tool call, we are done.
+            // Small safety fallback for the common "what time is it" demo:
+            // if the agent has exactly one tool `get_time` but the model didn't emit a tool call,
+            // call it directly so the UX is reliable.
+            if (
+                agent.assignedTool &&
+                tools.length === 1 &&
+                this.shouldForceGetTime(agent.assignedTool.toolName, task) &&
+                mcpClients.has(agent.assignedTool.serverId)
+            ) {
+                try {
+                    const client = mcpClients.get(agent.assignedTool.serverId)!;
+                    const result = await client.callTool('get_time', {});
+                    response = `Current time (from MCP tool): ${result?.now ?? JSON.stringify(result)}`;
+                } catch (e) {
+                    response = `Error calling MCP tool get_time: ${String(e)}`;
+                }
+            }
             break;
         }
 

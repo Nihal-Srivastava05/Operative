@@ -55,7 +55,10 @@ export class Orchestrator {
 
         // 1. Routing
         // Construct routing prompt
-        const agentList = subAgents.map(a => `- ${a.name}: ${a.systemPrompt.substring(0, 100)}...`).join('\n');
+        const agentList = subAgents.map(a => {
+            const toolInfo = a.assignedTool ? ` (tool: ${a.assignedTool.toolName})` : '';
+            return `- ${a.name}${toolInfo}: ${a.systemPrompt.substring(0, 100)}...`;
+        }).join('\n');
 
         let targetAgentName = "None";
         let task = message;
@@ -120,6 +123,7 @@ JSON:`;
             for (const agent of subAgents) {
                 const lowerName = agent.name.toLowerCase();
                 const lowerPrompt = agent.systemPrompt.toLowerCase();
+                const lowerTool = agent.assignedTool?.toolName?.toLowerCase() || "";
 
                 // Extract key words from agent name
                 const nameWords = lowerName.split(/\s+/);
@@ -131,6 +135,13 @@ JSON:`;
                         const response = await this.runner.run(agent, message, this.mcpClients);
                         return { response, agentName: agent.name };
                     }
+                }
+
+                // Tool-name hinting: if the user's message mentions the assigned tool name, route there.
+                if (lowerTool && lowerMessage.includes(lowerTool)) {
+                    console.log(`Tool name match: "${lowerTool}" matched agent "${agent.name}"`);
+                    const response = await this.runner.run(agent, message, this.mcpClients);
+                    return { response, agentName: agent.name };
                 }
 
                 // Check for common action words
@@ -148,6 +159,13 @@ JSON:`;
                         const response = await this.runner.run(agent, message, this.mcpClients);
                         return { response, agentName: agent.name };
                     }
+                }
+
+                // Simple intent hint: time/date questions should route to any agent with a time tool.
+                if ((lowerMessage.includes('time') || lowerMessage.includes('date')) && lowerTool.includes('time')) {
+                    console.log(`Intent match: time/date matched agent "${agent.name}" via tool "${agent.assignedTool?.toolName}"`);
+                    const response = await this.runner.run(agent, message, this.mcpClients);
+                    return { response, agentName: agent.name };
                 }
             }
 
