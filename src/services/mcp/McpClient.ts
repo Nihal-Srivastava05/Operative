@@ -1,8 +1,4 @@
-export interface McpTool {
-    name: string;
-    description?: string;
-    inputSchema: any;
-}
+import { IMcpClient, McpTool } from './interfaces';
 
 type McpClientOptions = {
     protocolVersion?: string;
@@ -14,7 +10,7 @@ type McpClientOptions = {
     requestTimeoutMs?: number;
 };
 
-export class McpClient {
+export class McpClient implements IMcpClient {
     private eventSource: EventSource | null = null;
     private postEndpoint: string | null = null;
     private requestId = 0;

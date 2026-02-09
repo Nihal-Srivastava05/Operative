@@ -1,6 +1,8 @@
 import { db, Agent } from '../../store/db';
 import { ChromeAIService } from '../ai/ChromeAIService';
 import { AgentRunner } from './AgentRunner';
+import { InternalMcpClient } from '../mcp/InternalMcpClient';
+import { IMcpClient } from '../mcp/interfaces';
 import { McpClient } from '../mcp/McpClient';
 import { extractJson } from '../../utils/jsonUtils';
 
@@ -8,7 +10,7 @@ export class Orchestrator {
     private static instance: Orchestrator;
     private runner: AgentRunner;
     private ai: ChromeAIService;
-    private mcpClients: Map<string, McpClient> = new Map();
+    private mcpClients: Map<string, IMcpClient> = new Map();
 
     private constructor() {
         this.runner = new AgentRunner();
@@ -23,6 +25,9 @@ export class Orchestrator {
     }
 
     public async initialize() {
+        // Register Internal Browser MCP
+        this.mcpClients.set("internal-browser", new InternalMcpClient());
+
         const settings = await db.settings.get('mcp_servers');
         if (settings && Array.isArray(settings.value)) {
             for (const url of settings.value) {

@@ -5,7 +5,9 @@
     "description": "Multi-agent system orchestrator for Chrome using Gemini Nano",
     "permissions": [
         "storage",
-        "sidePanel"
+        "sidePanel",
+        "debugger",
+        "scripting"
     ],
     "host_permissions": [
         "<all_urls>"
