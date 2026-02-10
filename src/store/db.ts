@@ -28,10 +28,39 @@ export interface Settings {
     value: any;
 }
 
+export interface Task {
+    id: string;
+    parentId?: string;
+    description: string;
+    status: 'pending' | 'in_progress' | 'completed' | 'failed';
+    targetAgentId?: string;
+    targetAgentName?: string;
+    priority: number;
+    dependencies: string[];
+    result?: string;
+    error?: string;
+    createdAt: number;
+    completedAt?: number;
+    planId: string; // Links task to its TaskPlan
+}
+
+export interface TaskPlanRecord {
+    id: string;
+    userMessage: string;
+    taskIds: string[]; // Ordered list of task IDs
+    currentTaskIndex: number;
+    status: 'planning' | 'executing' | 'completed' | 'failed';
+    results: Record<string, string>; // Task ID → result
+    createdAt: number;
+    completedAt?: number;
+}
+
 const db = new Dexie('OperativeDB') as Dexie & {
     agents: EntityTable<Agent, 'id'>;
     messages: EntityTable<Message, 'id'>;
     settings: EntityTable<Settings, 'key'>;
+    tasks: EntityTable<Task, 'id'>;
+    taskPlans: EntityTable<TaskPlanRecord, 'id'>;
 };
 
 db.version(1).stores({
@@ -44,6 +73,14 @@ db.version(2).stores({
     agents: 'id, name, type, enabled, parentId',
     messages: '++id, agentId, timestamp',
     settings: 'key'
+});
+
+db.version(3).stores({
+    agents: 'id, name, type, enabled, parentId',
+    messages: '++id, agentId, timestamp',
+    settings: 'key',
+    tasks: 'id, planId, status',
+    taskPlans: 'id, status'
 });
 
 export { db };

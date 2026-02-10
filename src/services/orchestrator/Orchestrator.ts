@@ -5,16 +5,22 @@ import { InternalMcpClient } from '../mcp/InternalMcpClient';
 import { IMcpClient } from '../mcp/interfaces';
 import { McpClient } from '../mcp/McpClient';
 import { extractJson } from '../../utils/jsonUtils';
+import { TaskDecomposer } from './TaskDecomposer';
+import { TaskQueue } from './TaskQueue';
 
 export class Orchestrator {
     private static instance: Orchestrator;
     private runner: AgentRunner;
     private ai: ChromeAIService;
     private mcpClients: Map<string, IMcpClient> = new Map();
+    private taskDecomposer: TaskDecomposer;
+    private taskQueue: TaskQueue;
 
     private constructor() {
         this.runner = new AgentRunner();
         this.ai = ChromeAIService.getInstance();
+        this.taskDecomposer = TaskDecomposer.getInstance();
+        this.taskQueue = TaskQueue.getInstance();
         // Ensure the internal browser MCP is always present (avoids races with initialize()).
         this.mcpClients.set("internal-browser", new InternalMcpClient());
     }
@@ -65,6 +71,12 @@ export class Orchestrator {
     private async getChildren(parentId: string): Promise<Agent[]> {
         const agents = await db.agents.toArray();
         return agents.filter(a => a.enabled && a.type === 'worker' && a.parentId === parentId);
+    }
+
+    /** All enabled workers (for task decomposition agent assignment). */
+    private async getEnabledWorkers(): Promise<Agent[]> {
+        const agents = await db.agents.toArray();
+        return agents.filter(a => a.enabled && a.type === 'worker');
     }
 
     /** Reusable router: pick one candidate from the list (LLM + validation). Returns agent + refined task or null. */
@@ -175,6 +187,32 @@ JSON:`;
             return { response: "No active agents found. Please create and enable an agent.", agentName: "System" };
         }
 
+        // 1. Resume active task plan if one is executing
+        const activePlan = await this.taskQueue.getCurrentPlan();
+        if (activePlan && activePlan.status === 'executing') {
+            return this.executePlan();
+        }
+
+        // 2. Check if task decomposition is enabled and try decomposition for complex tasks
+        const decompositionSetting = await db.settings.get('task_decomposition_enabled');
+        const decompositionEnabled = decompositionSetting?.value !== false;
+        if (decompositionEnabled && rootCandidates.length > 0) {
+            const decomposition = await this.taskDecomposer.analyzeComplexity(message);
+            if (decomposition.needsDecomposition) {
+                const workers = await this.getEnabledWorkers();
+                if (workers.length > 0) {
+                    const maxSubtasksSetting = await db.settings.get('task_decomposition_max_subtasks');
+                    const maxSubtasks = typeof maxSubtasksSetting?.value === 'number' ? maxSubtasksSetting.value : 10;
+                    const tasks = await this.taskDecomposer.decomposeTask(message, await db.agents.toArray(), maxSubtasks);
+                    if (tasks.length > 1) {
+                        await this.taskQueue.createPlan(tasks, message);
+                        return this.executePlan();
+                    }
+                }
+            }
+        }
+
+        // 3. Standard routing flow
         // Single root candidate: if worker, run; if orchestrator, route among its children
         if (rootCandidates.length === 1) {
             const only = rootCandidates[0];
@@ -250,6 +288,41 @@ JSON:`;
             response: `Could not route within "${selected.name}". Available: ` + children.map(a => a.name).join(", "),
             agentName: selected.name
         };
+    }
+
+    /** Executes the current task plan sequentially until complete, then aggregates results. */
+    private async executePlan(): Promise<{ response: string; agentName: string }> {
+        while (!(await this.taskQueue.isPlanComplete())) {
+            const task = await this.taskQueue.getNextTask();
+            if (!task) break;
+
+            try {
+                const agentId = task.targetAgentId;
+                if (!agentId) {
+                    await this.taskQueue.markTaskFailed(task.id, 'No agent assigned');
+                    continue;
+                }
+                const agent = await db.agents.get(agentId);
+                if (!agent) {
+                    await this.taskQueue.markTaskFailed(task.id, 'Agent not found');
+                    continue;
+                }
+
+                const result = await this.runner.run(agent, task.description, this.mcpClients);
+                await this.taskQueue.markTaskComplete(task.id, result);
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                await this.taskQueue.markTaskFailed(task.id, errorMessage);
+                // Continue with remaining tasks
+            }
+        }
+
+        return this.taskQueue.aggregateResults();
+    }
+
+    /** Expose current task plan for UI (e.g. progress indicator). */
+    public async getCurrentTaskPlan() {
+        return this.taskQueue.getCurrentPlan();
     }
 
     public async getConnectedTools(): Promise<{ serverId: string, toolName: string }[]> {

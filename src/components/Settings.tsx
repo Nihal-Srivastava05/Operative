@@ -1,22 +1,40 @@
 import React, { useState, useEffect } from 'react';
-import { db, Settings as SettingsType } from '../store/db';
+import { db } from '../store/db';
 import { Orchestrator } from '../services/orchestrator/Orchestrator';
 import { Trash2, Plus, RefreshCw } from 'lucide-react';
+
+const DEFAULT_MAX_SUBTASKS = 10;
+const DEFAULT_TASK_TIMEOUT_SEC = 60;
 
 export function Settings() {
     const [servers, setServers] = useState<string[]>([]);
     const [newUrl, setNewUrl] = useState('');
+    const [taskDecompositionEnabled, setTaskDecompositionEnabled] = useState(true);
+    const [maxSubtasks, setMaxSubtasks] = useState(DEFAULT_MAX_SUBTASKS);
+    const [taskTimeoutSec, setTaskTimeoutSec] = useState(DEFAULT_TASK_TIMEOUT_SEC);
+    const [autoRetryFailed, setAutoRetryFailed] = useState(false);
 
     const loadServers = async () => {
-        // We store servers in settings table under key 'mcp_servers'
         const record = await db.settings.get('mcp_servers');
         if (record) {
             setServers(record.value);
         }
     };
 
+    const loadTaskDecompositionSettings = async () => {
+        const enabled = await db.settings.get('task_decomposition_enabled');
+        const max = await db.settings.get('task_decomposition_max_subtasks');
+        const timeout = await db.settings.get('task_decomposition_task_timeout');
+        const retry = await db.settings.get('task_decomposition_auto_retry');
+        if (enabled?.value !== undefined) setTaskDecompositionEnabled(Boolean(enabled.value));
+        if (typeof max?.value === 'number') setMaxSubtasks(max.value);
+        if (typeof timeout?.value === 'number') setTaskTimeoutSec(timeout.value);
+        if (retry?.value !== undefined) setAutoRetryFailed(Boolean(retry.value));
+    };
+
     useEffect(() => {
         loadServers();
+        loadTaskDecompositionSettings();
     }, []);
 
     const addServer = async () => {
@@ -75,6 +93,73 @@ export function Settings() {
                         </div>
                     ))}
                     {servers.length === 0 && <p className="text-xs text-slate-500">No servers connected.</p>}
+                </div>
+            </div>
+
+            <div className="mb-6">
+                <h3 className="text-md font-semibold text-slate-300 mb-2">Task decomposition</h3>
+                <p className="text-xs text-slate-500 mb-3">
+                    Split complex requests into subtasks and run them in sequence with the right agents.
+                </p>
+                <div className="space-y-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={taskDecompositionEnabled}
+                            onChange={async e => {
+                                const v = e.target.checked;
+                                setTaskDecompositionEnabled(v);
+                                await db.settings.put({ key: 'task_decomposition_enabled', value: v });
+                            }}
+                            className="rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="text-sm">Enable task decomposition</span>
+                    </label>
+                    <div>
+                        <label className="block text-sm text-slate-400 mb-1">Max subtasks</label>
+                        <input
+                            type="number"
+                            min={2}
+                            max={20}
+                            value={maxSubtasks}
+                            onChange={e => setMaxSubtasks(Number(e.target.value))}
+                            onBlur={async () => {
+                                const v = Math.max(2, Math.min(20, maxSubtasks));
+                                setMaxSubtasks(v);
+                                await db.settings.put({ key: 'task_decomposition_max_subtasks', value: v });
+                            }}
+                            className="w-20 bg-slate-800 border border-slate-700 rounded p-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm text-slate-400 mb-1">Task timeout (seconds)</label>
+                        <input
+                            type="number"
+                            min={10}
+                            max={300}
+                            value={taskTimeoutSec}
+                            onChange={e => setTaskTimeoutSec(Number(e.target.value))}
+                            onBlur={async () => {
+                                const v = Math.max(10, Math.min(300, taskTimeoutSec));
+                                setTaskTimeoutSec(v);
+                                await db.settings.put({ key: 'task_decomposition_task_timeout', value: v });
+                            }}
+                            className="w-20 bg-slate-800 border border-slate-700 rounded p-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={autoRetryFailed}
+                            onChange={async e => {
+                                const v = e.target.checked;
+                                setAutoRetryFailed(v);
+                                await db.settings.put({ key: 'task_decomposition_auto_retry', value: v });
+                            }}
+                            className="rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="text-sm">Auto-retry failed tasks</span>
+                    </label>
                 </div>
             </div>
 
