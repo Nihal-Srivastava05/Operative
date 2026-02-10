@@ -51,6 +51,7 @@ npm run mcp:demo-server
 ```
 
 This starts a local MCP server at `http://127.0.0.1:3333` providing `echo` and `get_time` tools.
+It also provides a `prettier_format` tool for formatting code snippets via Prettier.
 
 ### Configuration
 

@@ -39,6 +39,7 @@ Operative includes a test server to demonstrate tool usage.
     - **Tools**:
         - `echo`: Returns the input text.
         - `get_time`: Returns the current ISO timestamp.
+        - `prettier_format`: Formats a provided code string using Prettier (useful for formatting snippets).
 
 ## Creating a New Agent
 
