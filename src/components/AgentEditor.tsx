@@ -12,9 +12,12 @@ interface AgentEditorProps {
 export function AgentEditor({ agent, onClose }: AgentEditorProps) {
     const [name, setName] = useState(agent?.name || '');
     const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt || '');
+    const [type, setType] = useState<'orchestrator' | 'worker'>(agent?.type || 'worker');
+    const [parentId, setParentId] = useState<string | undefined>(agent?.parentId);
     const [assignedTool, setAssignedTool] = useState<{ serverId: string, toolName: string } | null>(agent?.assignedTool || null);
 
     const [availableTools, setAvailableTools] = useState<{ serverId: string, toolName: string }[]>([]);
+    const [orchestratorAgents, setOrchestratorAgents] = useState<Agent[]>([]);
 
     useEffect(() => {
         const loadTools = async () => {
@@ -24,14 +27,24 @@ export function AgentEditor({ agent, onClose }: AgentEditorProps) {
         loadTools();
     }, []);
 
+    useEffect(() => {
+        const loadOrchestrators = async () => {
+            const all = await db.agents.toArray();
+            const orchestrators = all.filter(a => a.type === 'orchestrator' && a.enabled && a.id !== agent?.id);
+            setOrchestratorAgents(orchestrators);
+        };
+        loadOrchestrators();
+    }, [agent?.id]);
+
     const handleSave = async () => {
         if (!name || !systemPrompt) return; // Basic validation
 
         const agentData: any = {
             name,
             systemPrompt,
-            type: 'worker', // All user-created agents are workers
-            assignedTool: assignedTool || undefined,
+            type,
+            parentId: type === 'worker' ? (parentId || undefined) : undefined,
+            assignedTool: type === 'worker' ? (assignedTool || undefined) : undefined,
             enabled: agent ? agent.enabled : true,
         };
 
@@ -67,9 +80,41 @@ export function AgentEditor({ agent, onClose }: AgentEditorProps) {
                     />
                 </div>
 
-                {/* Type is always 'worker' for user-created agents - Orchestrator is built-in */}
+                <div>
+                    <label className="block text-sm font-medium text-slate-400 mb-1">Type</label>
+                    <select
+                        value={type}
+                        onChange={e => setType(e.target.value as 'orchestrator' | 'worker')}
+                        className="w-full bg-slate-800 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    >
+                        <option value="worker">Worker</option>
+                        <option value="orchestrator">Orchestrator</option>
+                    </select>
+                    <p className="text-xs text-slate-500 mt-1">
+                        {type === 'orchestrator' ? 'Routes requests to its child agents.' : 'Executes tasks; can be assigned to an Orchestrator.'}
+                    </p>
+                </div>
 
-                {/* Tool Selection */}
+                {type === 'worker' && (
+                    <div>
+                        <label className="block text-sm font-medium text-slate-400 mb-1">Parent Orchestrator (Optional)</label>
+                        <select
+                            value={parentId ?? ''}
+                            onChange={e => setParentId(e.target.value || undefined)}
+                            className="w-full bg-slate-800 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-indigo-500 outline-none"
+                        >
+                            <option value="">None (top-level)</option>
+                            {orchestratorAgents.map(a => (
+                                <option key={a.id} value={a.id}>{a.name}</option>
+                            ))}
+                        </select>
+                        {orchestratorAgents.length === 0 && (
+                            <p className="text-xs text-slate-500 mt-1">No other orchestrators. Create an Orchestrator agent to assign workers under it.</p>
+                        )}
+                    </div>
+                )}
+
+                {type === 'worker' && (
                 <div>
                     <label className="block text-sm font-medium text-slate-400 mb-1">Assigned Tool (Optional)</label>
                     <select
@@ -96,6 +141,7 @@ export function AgentEditor({ agent, onClose }: AgentEditorProps) {
                         <p className="text-xs text-slate-500 mt-1">No tools detected. Configure MCP servers in Settings.</p>
                     )}
                 </div>
+                )}
 
                 <div>
                     <label className="block text-sm font-medium text-slate-400 mb-1">System Prompt</label>

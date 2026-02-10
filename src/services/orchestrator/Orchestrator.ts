@@ -15,6 +15,8 @@ export class Orchestrator {
     private constructor() {
         this.runner = new AgentRunner();
         this.ai = ChromeAIService.getInstance();
+        // Ensure the internal browser MCP is always present (avoids races with initialize()).
+        this.mcpClients.set("internal-browser", new InternalMcpClient());
     }
 
     public static getInstance(): Orchestrator {
@@ -25,8 +27,10 @@ export class Orchestrator {
     }
 
     public async initialize() {
-        // Register Internal Browser MCP
-        this.mcpClients.set("internal-browser", new InternalMcpClient());
+        // Register Internal Browser MCP (idempotent)
+        if (!this.mcpClients.has("internal-browser")) {
+            this.mcpClients.set("internal-browser", new InternalMcpClient());
+        }
 
         const settings = await db.settings.get('mcp_servers');
         if (settings && Array.isArray(settings.value)) {
@@ -49,171 +53,203 @@ export class Orchestrator {
         }
     }
 
-    public async handleUserMessage(message: string): Promise<{ response: string; agentName: string }> {
+    /** Root candidates: enabled orchestrators + enabled workers with no parent (top-level). */
+    private async getRootCandidates(): Promise<Agent[]> {
         const agents = await db.agents.toArray();
-        const subAgents = agents.filter(a => a.enabled && a.type === 'worker');
+        const orchestrators = agents.filter(a => a.enabled && a.type === 'orchestrator');
+        const topLevelWorkers = agents.filter(a => a.enabled && a.type === 'worker' && !a.parentId);
+        return [...orchestrators, ...topLevelWorkers];
+    }
 
-        // If no agents, check if orchestrator itself is enabled, otherwise fail
-        if (subAgents.length === 0) {
-            return { response: "No active agents found. Please create and enable an agent.", agentName: "System" };
-        }
+    /** Enabled worker children of a given orchestrator. */
+    private async getChildren(parentId: string): Promise<Agent[]> {
+        const agents = await db.agents.toArray();
+        return agents.filter(a => a.enabled && a.type === 'worker' && a.parentId === parentId);
+    }
 
-        // 1. Routing
-        // Construct routing prompt
-        const agentList = subAgents.map(a => {
+    /** Reusable router: pick one candidate from the list (LLM + validation). Returns agent + refined task or null. */
+    private async routeRequest(message: string, candidates: Agent[]): Promise<{ agent: Agent; task: string } | null> {
+        if (candidates.length === 0) return null;
+        if (candidates.length === 1) return { agent: candidates[0], task: message };
+
+        const agentList = candidates.map(a => {
+            const kind = a.type === 'orchestrator' ? 'orchestrator' : 'worker';
             const toolInfo = a.assignedTool ? ` (tool: ${a.assignedTool.toolName})` : '';
-            return `- ${a.name}${toolInfo}: ${a.systemPrompt.substring(0, 100)}...`;
+            return `- ${a.name} [${kind}]${toolInfo}: ${a.systemPrompt.substring(0, 100)}...`;
         }).join('\n');
 
-        let targetAgentName = "None";
-        let task = message;
         let attempt = 0;
-        let lastError = "";
-
-        // If only one agent, route directly to it
-        if (subAgents.length === 1) {
-            console.log("Only one agent available, routing directly");
-            const response = await this.runner.run(subAgents[0], message, this.mcpClients);
-            return { response, agentName: subAgents[0].name };
-        }
+        let lastError = '';
 
         while (attempt < 2) {
-            const routerPrompt = `Task: Route the user request to the correct agent.
+            const routerPrompt = `Task: Route the user request to the correct option.
 Response format: Valid JSON only.
 
-Available Agents:
+Available options:
 ${agentList}
 
 User Request: "${message}"
 
-Your response must be a single JSON object in this exact shape:
-{"agentName":"<agent name from list OR None>","task":"<the user request rewritten for that agent (or exactly repeat the user request)>"} 
-
-Guidelines:
-- Choose from the list of available agents.
-- If no agent is suitable, use "None" as the agentName.
-- The "task" MUST be actionable and MUST NOT be a placeholder string. If unsure, set "task" to the User Request verbatim.
-- Output ONLY the JSON. No conversational text.
-${lastError ? `\nNote: Last attempt failed because: ${lastError}` : ""}
+Respond with a single JSON object: {"agentName":"<name from list OR None>","task":"<rewritten task or user request>"}
+- Choose from the list only. If none fit, use "None".
+- "task" must be actionable; if unsure, repeat the user request.
+- Output ONLY the JSON.
+${lastError ? `\nPrevious error: ${lastError}` : ''}
 
 JSON:`;
 
-            const routerSession = await this.ai.createSession({
-                language: 'en',
-                temperature: 0.1
-            });
+            const routerSession = await this.ai.createSession({ language: 'en', temperature: 0.1 });
             const routerResponseRaw = await this.ai.generate(routerPrompt, routerSession);
             routerSession.destroy();
 
-            console.log("Router Response:", routerResponseRaw);
-
             const json = extractJson(routerResponseRaw, { logFailure: true });
-            if (json && json.agentName) {
-                targetAgentName = json.agentName;
-                const proposedTask = typeof json.task === 'string' ? json.task.trim() : '';
+            if (json && typeof json.agentName === 'string') {
+                const targetName = json.agentName.trim();
+                if (targetName === 'None' || !targetName) return null;
+
+                let proposedTask = typeof json.task === 'string' ? json.task.trim() : '';
                 const placeholder = proposedTask.toLowerCase();
-                task =
-                    proposedTask &&
-                        placeholder !== 'request for agent' &&
-                        placeholder !== 'request for agent:' &&
-                        placeholder !== 'request for the agent' &&
-                        placeholder !== 'request for the agent:'
-                        ? proposedTask
-                        : message;
-                console.log(`Routing to agent: ${targetAgentName}`);
-                break;
+                if (!proposedTask || placeholder === 'request for agent' || placeholder === 'request for agent:' || placeholder === 'request for the agent' || placeholder === 'request for the agent:') {
+                    proposedTask = message;
+                }
+
+                const agent = candidates.find(a => a.name === targetName);
+                if (agent) return { agent, task: proposedTask };
+
+                const lowerTarget = targetName.toLowerCase();
+                const fuzzy = candidates.find(a =>
+                    a.name.toLowerCase().includes(lowerTarget) || lowerTarget.includes(a.name.toLowerCase())
+                );
+                if (fuzzy) {
+                    console.log(`Fuzzy matched '${targetName}' to '${fuzzy.name}'`);
+                    return { agent: fuzzy, task: proposedTask };
+                }
+                lastError = `"${targetName}" is not in the list. Use exact names from the list or "None".`;
             } else {
-                console.warn("Router returned invalid JSON", routerResponseRaw);
-                lastError = "Invalid JSON format. Please return ONLY the JSON object shown in the format above.";
-                attempt++;
+                lastError = 'Invalid JSON. Return only the JSON object.';
+            }
+            attempt++;
+        }
+        return null;
+    }
+
+    /** Keyword-based fallback within a candidate set (workers only for tool/action hints). */
+    private async keywordFallback(message: string, candidates: Agent[]): Promise<Agent | null> {
+        const lowerMessage = message.toLowerCase();
+        for (const agent of candidates) {
+            const lowerName = agent.name.toLowerCase();
+            const lowerPrompt = agent.systemPrompt.toLowerCase();
+            const lowerTool = agent.assignedTool?.toolName?.toLowerCase() || '';
+
+            const nameWords = lowerName.split(/\s+/);
+            for (const word of nameWords) {
+                if (word.length > 3 && lowerMessage.includes(word)) {
+                    console.log(`Keyword match: "${word}" -> "${agent.name}"`);
+                    return agent;
+                }
+            }
+            if (lowerTool && lowerMessage.includes(lowerTool)) {
+                console.log(`Tool name match: "${lowerTool}" -> "${agent.name}"`);
+                return agent;
+            }
+            if ((lowerMessage.includes('summarize') || lowerMessage.includes('summary')) && (lowerName.includes('summar') || lowerPrompt.includes('summar'))) {
+                console.log(`Action match: summarize -> "${agent.name}"`);
+                return agent;
+            }
+            if ((lowerMessage.includes('generate') || lowerMessage.includes('create') || lowerMessage.includes('make')) && (lowerName.includes('generat') || lowerName.includes('creat') || lowerPrompt.includes('generat'))) {
+                console.log(`Action match: generate -> "${agent.name}"`);
+                return agent;
+            }
+            if ((lowerMessage.includes('time') || lowerMessage.includes('date')) && lowerTool.includes('time')) {
+                console.log(`Intent match: time/date -> "${agent.name}"`);
+                return agent;
             }
         }
+        return null;
+    }
 
-        // If routing failed or returned "None", try keyword-based fallback
-        if (targetAgentName === "None" || !targetAgentName) {
-            console.log("Attempting keyword-based fallback routing");
-            const lowerMessage = message.toLowerCase();
+    public async handleUserMessage(message: string): Promise<{ response: string; agentName: string }> {
+        const rootCandidates = await this.getRootCandidates();
 
-            // Try to match keywords in message to agent names/prompts
-            for (const agent of subAgents) {
-                const lowerName = agent.name.toLowerCase();
-                const lowerPrompt = agent.systemPrompt.toLowerCase();
-                const lowerTool = agent.assignedTool?.toolName?.toLowerCase() || "";
+        if (rootCandidates.length === 0) {
+            return { response: "No active agents found. Please create and enable an agent.", agentName: "System" };
+        }
 
-                // Extract key words from agent name
-                const nameWords = lowerName.split(/\s+/);
-
-                // Check if any significant word from agent name appears in message
-                for (const word of nameWords) {
-                    if (word.length > 3 && lowerMessage.includes(word)) {
-                        console.log(`Keyword match: "${word}" in message matched agent "${agent.name}"`);
-                        const response = await this.runner.run(agent, message, this.mcpClients);
-                        return { response, agentName: agent.name };
-                    }
-                }
-
-                // Tool-name hinting: if the user's message mentions the assigned tool name, route there.
-                if (lowerTool && lowerMessage.includes(lowerTool)) {
-                    console.log(`Tool name match: "${lowerTool}" matched agent "${agent.name}"`);
-                    const response = await this.runner.run(agent, message, this.mcpClients);
-                    return { response, agentName: agent.name };
-                }
-
-                // Check for common action words
-                if (lowerMessage.includes('summarize') || lowerMessage.includes('summary')) {
-                    if (lowerName.includes('summar') || lowerPrompt.includes('summar')) {
-                        console.log(`Action word match: "summarize" matched agent "${agent.name}"`);
-                        const response = await this.runner.run(agent, message, this.mcpClients);
-                        return { response, agentName: agent.name };
-                    }
-                }
-
-                if (lowerMessage.includes('generate') || lowerMessage.includes('create') || lowerMessage.includes('make')) {
-                    if (lowerName.includes('generat') || lowerName.includes('creat') || lowerPrompt.includes('generat')) {
-                        console.log(`Action word match: found generation-related agent "${agent.name}"`);
-                        const response = await this.runner.run(agent, message, this.mcpClients);
-                        return { response, agentName: agent.name };
-                    }
-                }
-
-                // Simple intent hint: time/date questions should route to any agent with a time tool.
-                if ((lowerMessage.includes('time') || lowerMessage.includes('date')) && lowerTool.includes('time')) {
-                    console.log(`Intent match: time/date matched agent "${agent.name}" via tool "${agent.assignedTool?.toolName}"`);
-                    const response = await this.runner.run(agent, message, this.mcpClients);
-                    return { response, agentName: agent.name };
-                }
+        // Single root candidate: if worker, run; if orchestrator, route among its children
+        if (rootCandidates.length === 1) {
+            const only = rootCandidates[0];
+            if (only.type === 'worker') {
+                const response = await this.runner.run(only, message, this.mcpClients);
+                return { response, agentName: only.name };
             }
-
+            const children = await this.getChildren(only.id);
+            if (children.length === 0) {
+                return { response: `Orchestrator "${only.name}" has no active child agents.`, agentName: only.name };
+            }
+            if (children.length === 1) {
+                const response = await this.runner.run(children[0], message, this.mcpClients);
+                return { response, agentName: children[0].name };
+            }
+            const routed = await this.routeRequest(message, children);
+            if (routed) {
+                const response = await this.runner.run(routed.agent, routed.task, this.mcpClients);
+                return { response, agentName: routed.agent.name };
+            }
+            const fallback = await this.keywordFallback(message, children);
+            if (fallback) {
+                const response = await this.runner.run(fallback, message, this.mcpClients);
+                return { response, agentName: fallback.name };
+            }
             return {
-                response: "I'm not sure which agent to use for that request. Available agents: " + subAgents.map(a => a.name).join(", "),
+                response: "Could not route to a child agent. Available: " + children.map(a => a.name).join(", "),
+                agentName: only.name
+            };
+        }
+
+        // Meta-level routing among root candidates (orchestrators + top-level workers)
+        let routed = await this.routeRequest(message, rootCandidates);
+        if (!routed) {
+            const fallback = await this.keywordFallback(message, rootCandidates);
+            if (fallback) {
+                const response = await this.runner.run(fallback, message, this.mcpClients);
+                return { response, agentName: fallback.name };
+            }
+            return {
+                response: "I'm not sure which agent to use. Available: " + rootCandidates.map(a => a.name).join(", "),
                 agentName: "Orchestrator"
             };
         }
 
-        const targetAgent = subAgents.find(a => a.name === targetAgentName);
-        if (!targetAgent) {
-            // AI hallucination - try fuzzy matching
-            const lowerTargetName = targetAgentName.toLowerCase();
-            const fuzzyMatch = subAgents.find(a =>
-                a.name.toLowerCase().includes(lowerTargetName) ||
-                lowerTargetName.includes(a.name.toLowerCase())
-            );
+        const { agent: selected, task } = routed;
 
-            if (fuzzyMatch) {
-                console.log(`Fuzzy matched '${targetAgentName}' to '${fuzzyMatch.name}'`);
-                const response = await this.runner.run(fuzzyMatch, task, this.mcpClients);
-                return { response, agentName: fuzzyMatch.name };
-            }
-
-            return {
-                response: `Orchestrator tried to route to '${targetAgentName}' but it doesn't exist. Available agents: ${subAgents.map(a => a.name).join(", ")}`,
-                agentName: "Orchestrator"
-            };
+        if (selected.type === 'worker') {
+            const response = await this.runner.run(selected, task, this.mcpClients);
+            return { response, agentName: selected.name };
         }
 
-        // 2. Execution
-        const response = await this.runner.run(targetAgent, task, this.mcpClients);
-        return { response, agentName: targetAgent.name };
+        // Selected is a mini-orchestrator: route among its children
+        const children = await this.getChildren(selected.id);
+        if (children.length === 0) {
+            return { response: `Orchestrator "${selected.name}" has no active child agents.`, agentName: selected.name };
+        }
+        if (children.length === 1) {
+            const response = await this.runner.run(children[0], task, this.mcpClients);
+            return { response, agentName: children[0].name };
+        }
+        const childRouted = await this.routeRequest(task, children);
+        if (childRouted) {
+            const response = await this.runner.run(childRouted.agent, childRouted.task, this.mcpClients);
+            return { response, agentName: childRouted.agent.name };
+        }
+        const childFallback = await this.keywordFallback(task, children);
+        if (childFallback) {
+            const response = await this.runner.run(childFallback, task, this.mcpClients);
+            return { response, agentName: childFallback.name };
+        }
+        return {
+            response: `Could not route within "${selected.name}". Available: ` + children.map(a => a.name).join(", "),
+            agentName: selected.name
+        };
     }
 
     public async getConnectedTools(): Promise<{ serverId: string, toolName: string }[]> {

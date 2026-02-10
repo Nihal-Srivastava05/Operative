@@ -7,6 +7,54 @@ interface AgentListProps {
     onCreate: () => void;
 }
 
+function agentCard(agent: Agent, parentName: string | null, onEdit: (a: Agent) => void, toggleAgent: (a: Agent) => void, deleteAgent: (id: string) => void) {
+    const toolLabel = agent.assignedTool ? `${agent.assignedTool.toolName} (${agent.assignedTool.serverId})` : null;
+    return (
+        <div key={agent.id} className="bg-slate-800 p-3 rounded-lg border border-slate-700 flex flex-col gap-2">
+            <div className="flex justify-between items-start">
+                <div>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${agent.type === 'orchestrator' ? 'bg-purple-900 text-purple-200' : 'bg-blue-900 text-blue-200'}`}>
+                        {agent.type}
+                    </span>
+                    {parentName && (
+                        <span className="text-xs text-slate-500 ml-2">under {parentName}</span>
+                    )}
+                    <h3 className="font-semibold text-white mt-1">{agent.name}</h3>
+                    {toolLabel && (
+                        <div className="text-xs text-slate-400 mt-1">
+                            Tool: <span className="text-slate-300">{toolLabel}</span>
+                        </div>
+                    )}
+                </div>
+                <div className="flex space-x-1">
+                    <button
+                        onClick={() => toggleAgent(agent)}
+                        className={`p-1.5 rounded transition ${agent.enabled ? 'text-green-400 bg-green-900/30' : 'text-slate-500 bg-slate-700/50'}`}
+                        title="Toggle Enable"
+                    >
+                        <Power className="w-4 h-4" />
+                    </button>
+                    <button
+                        onClick={() => onEdit(agent)}
+                        className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition"
+                    >
+                        <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                        onClick={() => deleteAgent(agent.id)}
+                        className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded transition"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+                </div>
+            </div>
+            <p className="text-xs text-slate-400 line-clamp-2">
+                {agent.systemPrompt}
+            </p>
+        </div>
+    );
+}
+
 export function AgentList({ onEdit, onCreate }: AgentListProps) {
     const [agents, setAgents] = useState<Agent[]>([]);
 
@@ -17,7 +65,6 @@ export function AgentList({ onEdit, onCreate }: AgentListProps) {
 
     useEffect(() => {
         loadAgents();
-        // Simple polling or event listener could go here if needed
     }, []);
 
     const toggleAgent = async (agent: Agent) => {
@@ -32,6 +79,15 @@ export function AgentList({ onEdit, onCreate }: AgentListProps) {
         }
     };
 
+    const orchestrators = agents.filter(a => a.type === 'orchestrator');
+    const workersByParent = new Map<string | null, Agent[]>();
+    for (const a of agents.filter(a => a.type === 'worker')) {
+        const key = a.parentId ?? null;
+        if (!workersByParent.has(key)) workersByParent.set(key, []);
+        workersByParent.get(key)!.push(a);
+    }
+    const topLevelWorkers = workersByParent.get(null) ?? [];
+
     return (
         <div className="flex flex-col h-full">
             <div className="flex justify-between items-center mb-4">
@@ -45,51 +101,41 @@ export function AgentList({ onEdit, onCreate }: AgentListProps) {
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-3">
-                {/* Info message about orchestrator */}
                 <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 text-xs text-slate-400">
-                    <span className="text-indigo-400 font-semibold">ℹ️ Note:</span> The Orchestrator is built-in and automatically routes your requests to the appropriate worker agents below.
+                    <span className="text-indigo-400 font-semibold">Note:</span> The Meta Orchestrator routes requests to Mini Orchestrators or top-level workers; each Mini Orchestrator routes to its child agents.
                 </div>
 
-                {agents.map(agent => (
-                    <div key={agent.id} className="bg-slate-800 p-3 rounded-lg border border-slate-700 flex flex-col gap-2">
-                        <div className="flex justify-between items-start">
-                            <div>
-                                <span className={`text-xs px-2 py-0.5 rounded-full ${agent.type === 'orchestrator' ? 'bg-purple-900 text-purple-200' : 'bg-blue-900 text-blue-200'}`}>
-                                    {agent.type}
-                                </span>
-                                <h3 className="font-semibold text-white mt-1">{agent.name}</h3>
-                            </div>
-                            <div className="flex space-x-1">
-                                <button
-                                    onClick={() => toggleAgent(agent)}
-                                    className={`p-1.5 rounded transition ${agent.enabled ? 'text-green-400 bg-green-900/30' : 'text-slate-500 bg-slate-700/50'}`}
-                                    title="Toggle Enable"
-                                >
-                                    <Power className="w-4 h-4" />
-                                </button>
-                                <button
-                                    onClick={() => onEdit(agent)}
-                                    className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition"
-                                >
-                                    <Edit className="w-4 h-4" />
-                                </button>
-                                <button
-                                    onClick={() => deleteAgent(agent.id)}
-                                    className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded transition"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
+                {orchestrators.length > 0 && (
+                    <>
+                        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Orchestrators</h3>
+                        {orchestrators.map(o => agentCard(o, null, onEdit, toggleAgent, deleteAgent))}
+                    </>
+                )}
+
+                {topLevelWorkers.length > 0 && (
+                    <>
+                        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Top-level workers</h3>
+                        {topLevelWorkers.map(w => agentCard(w, null, onEdit, toggleAgent, deleteAgent))}
+                    </>
+                )}
+
+                {orchestrators.map((orch) => {
+                    const children = workersByParent.get(orch.id) ?? [];
+                    if (children.length === 0) return null;
+                    return (
+                        <div key={orch.id}>
+                            <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wide">Under {orch.name}</h3>
+                            <div className="space-y-3 mt-2">
+                                {children.map(w => agentCard(w, orch.name, onEdit, toggleAgent, deleteAgent))}
                             </div>
                         </div>
-                        <p className="text-xs text-slate-400 line-clamp-2">
-                            {agent.systemPrompt}
-                        </p>
-                    </div>
-                ))}
+                    );
+                })}
+
                 {agents.length === 0 && (
                     <div className="text-center text-slate-500 mt-10">
-                        <p className="mb-2">No worker agents yet.</p>
-                        <p className="text-xs">Create specialized agents to handle different tasks!</p>
+                        <p className="mb-2">No agents yet.</p>
+                        <p className="text-xs">Create Orchestrator or Worker agents to get started.</p>
                     </div>
                 )}
             </div>

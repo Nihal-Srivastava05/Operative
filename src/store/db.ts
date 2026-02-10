@@ -6,6 +6,7 @@ export interface Agent {
     systemPrompt: string;
     type: 'orchestrator' | 'worker';
     enabled: boolean;
+    parentId?: string;
     assignedTool?: {
         serverId: string;
         toolName: string;
@@ -35,6 +36,12 @@ const db = new Dexie('OperativeDB') as Dexie & {
 
 db.version(1).stores({
     agents: 'id, name, type, enabled',
+    messages: '++id, agentId, timestamp',
+    settings: 'key'
+});
+
+db.version(2).stores({
+    agents: 'id, name, type, enabled, parentId',
     messages: '++id, agentId, timestamp',
     settings: 'key'
 });
