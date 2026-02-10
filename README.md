@@ -1,4 +1,7 @@
-# Operative
+<div align="center">
+  <img src="logo.png" alt="Operative Logo" width="128" />
+  <h1>Operative</h1>
+</div>
 
 Operative is a Chrome Extension that orchestrates AI agents to perform tasks using the Model Context Protocol (MCP). It leverages Chrome's built-in AI capabilities (`window.ai`) to route user requests to specialized agents and execute tools.
 
