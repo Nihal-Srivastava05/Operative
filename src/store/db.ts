@@ -55,12 +55,21 @@ export interface TaskPlanRecord {
     completedAt?: number;
 }
 
+export interface Knowledge {
+    id: string;
+    content: string;
+    embedding: number[];
+    metadata?: any;
+    createdAt: number;
+}
+
 const db = new Dexie('OperativeDB') as Dexie & {
     agents: EntityTable<Agent, 'id'>;
     messages: EntityTable<Message, 'id'>;
     settings: EntityTable<Settings, 'key'>;
     tasks: EntityTable<Task, 'id'>;
     taskPlans: EntityTable<TaskPlanRecord, 'id'>;
+    knowledge: EntityTable<Knowledge, 'id'>;
 };
 
 db.version(1).stores({
@@ -80,7 +89,8 @@ db.version(3).stores({
     messages: '++id, agentId, timestamp',
     settings: 'key',
     tasks: 'id, planId, status',
-    taskPlans: 'id, status'
+    taskPlans: 'id, status',
+    knowledge: 'id, content, createdAt'
 });
 
 export { db };

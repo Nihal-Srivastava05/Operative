@@ -4,6 +4,8 @@ import { AgentRunner } from './AgentRunner';
 import { InternalMcpClient } from '../mcp/InternalMcpClient';
 import { IMcpClient } from '../mcp/interfaces';
 import { McpClient } from '../mcp/McpClient';
+import { BrowserMcpServer } from '../mcp/servers/BrowserMcpServer';
+import { KnowledgeMcpServer } from '../mcp/servers/KnowledgeMcpServer';
 import { extractJson } from '../../utils/jsonUtils';
 import { TaskDecomposer } from './TaskDecomposer';
 import { TaskQueue } from './TaskQueue';
@@ -21,8 +23,6 @@ export class Orchestrator {
         this.ai = ChromeAIService.getInstance();
         this.taskDecomposer = TaskDecomposer.getInstance();
         this.taskQueue = TaskQueue.getInstance();
-        // Ensure the internal browser MCP is always present (avoids races with initialize()).
-        this.mcpClients.set("internal-browser", new InternalMcpClient());
     }
 
     public static getInstance(): Orchestrator {
@@ -33,10 +33,11 @@ export class Orchestrator {
     }
 
     public async initialize() {
-        // Register Internal Browser MCP (idempotent)
-        if (!this.mcpClients.has("internal-browser")) {
-            this.mcpClients.set("internal-browser", new InternalMcpClient());
-        }
+        // Register Internal Browser MCP
+        this.mcpClients.set("internal-browser", new InternalMcpClient(new BrowserMcpServer()));
+
+        // Register Internal Knowledge MCP
+        this.mcpClients.set("internal-knowledge", new InternalMcpClient(new KnowledgeMcpServer()));
 
         const settings = await db.settings.get('mcp_servers');
         if (settings && Array.isArray(settings.value)) {

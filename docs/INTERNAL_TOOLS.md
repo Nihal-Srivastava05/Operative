@@ -57,5 +57,25 @@ When you assign the **Internal Browser** tool source to an agent, it gains acces
 
 ---
 
+### 🧠 Knowledge & Memory (Internal Knowledge)
+
+These tools use **Semantic Vector Search** across an IndexedDB store to provide agents with a persistent long-term memory.
+
+#### `store_knowledge`
+- **Description**: Saves information to the persistent knowledge base.
+- **Use Case**: Remembering user preferences, historical context, or specific facts learned during a task.
+- **Inputs**:
+  - `content` (string, required): The information to remember.
+  - `category` (string, optional): A tag to group similar information.
+
+#### `recall_knowledge`
+- **Description**: Performs a semantic search over all stored knowledge to find relevant information.
+- **Use Case**: Answering questions based on previous interactions, checking if a fact is already known, or retrieving user-specific context.
+- **Inputs**:
+  - `query` (string, required): The search query or question.
+  - `limit` (number, optional): Max results to return (default: 5).
+
+---
+
 ## Technical Note: The Debugger Bar
 When an agent uses these tools, Chrome will display a notification bar at the top of the tab stating: `"Operative" is debugging this tab`. This is a security requirement of the Chrome Debugger API and is expected behavior.

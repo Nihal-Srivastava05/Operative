@@ -23,7 +23,8 @@
         "noFallthroughCasesInSwitch": true,
         "types": [
             "chrome",
-            "vite/client"
+            "vite/client",
+            "vitest/globals"
         ]
     },
     "include": [

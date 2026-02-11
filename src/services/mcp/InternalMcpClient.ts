@@ -2,14 +2,13 @@ import { IMcpClient, McpTool } from './interfaces';
 import { BrowserMcpServer } from './servers/BrowserMcpServer';
 
 export class InternalMcpClient implements IMcpClient {
-    private server: BrowserMcpServer;
+    private server: any;
 
-    constructor() {
-        this.server = new BrowserMcpServer();
+    constructor(server: any) {
+        this.server = server;
     }
 
     async connect(): Promise<void> {
-        // No-op for internal server, or maybe lazy init
         console.log("InternalMcpClient: connected (virtual)");
     }
 
@@ -22,7 +21,6 @@ export class InternalMcpClient implements IMcpClient {
     }
 
     disconnect(): void {
-        // Cleanup if needed
         console.log("InternalMcpClient: disconnected");
     }
 }
