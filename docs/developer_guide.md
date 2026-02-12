@@ -50,11 +50,16 @@ Agents are currently created dynamically via the UI and stored in IndexedDB.
 1.  Open the extension.
 2.  Navigate to the **Agents** tab.
 3.  Click the **+** (New Agent) button.
-4.  **Name**: Give your agent a descriptive name (e.g., "Summarizer").
-5.  **System Prompt**: Define the agent's persona and instructions.
-    - Example: "You are a helpful assistant that summarizes text concisely."
-6.  **Assigned Tool**: Select a tool if needed (requires a connected MCP server).
-7.  Click **Save**.
+4.  **Name**: Give your agent a descriptive name (e.g., "Developer Helper").
+5.  **Type**: Choose between **Worker** or **Orchestrator**.
+    - **Worker**: A specialized agent that performs specific tasks or uses a tool.
+    - **Orchestrator**: A "manager" agent that routes requests to its child agents.
+6.  **Parent**: (Optional) For Workers, you can select an Orchestrator as a parent to create a hierarchy. Top-level agents (no parent) are considered "Root Candidates" by the system.
+7.  **System Prompt**: Define the agent's persona and instructions.
+    - For Workers: "You are a professional coder. Use the provided tools to fix bugs."
+    - For Orchestrators: "You manage a team of developers. Decide which specialized agent is best for the user's request."
+8.  **Assigned Tool**: (Workers only) Select a tool if needed.
+9.  Click **Save**.
 
 ### Programmatic Agent Definition (Future)
 

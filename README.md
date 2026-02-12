@@ -7,11 +7,12 @@ Operative is a Chrome Extension that orchestrates AI agents to perform tasks usi
 
 ## Features
 
-- **Agent Orchestration**: Intelligent routing of user queries to the most suitable agent.
-- **Model Context Protocol (MCP)**: Connects to MCP servers to extend agent capabilities with external tools.
-- **Chrome Built-in AI**: Utilizes the local `window.ai.languageModel` for privacy-preserving and low-latency inference.
-- **Customizable Agents**: Create and configure agents with specific system prompts and assigned tools.
-- **Chat Interface**: Interact with your agents through a user-friendly chat interface.
+- **Meta Orchestrator**: Advanced hierarchical routing that handles multi-level agent trees (Orchestrators vs. Workers).
+- **Intelligent Task Decomposition**: Automatically breaks down complex user requests into sequential subtasks assigned to specialized agents.
+- **Model Context Protocol (MCP)**: Seamlessly connects to external MCP servers to extend agent capabilities with real-world tools.
+- **Chrome Built-in AI**: Leverages the local `window.ai.languageModel` (Gemini Nano) for private, fast, and local inference.
+- **Customizable Multi-Agent Workflows**: Create specialized agents with unique system prompts and tool assignments to build a collaborative AI team.
+- **Modern Chat Interface**: Interactive chat with progress tracking for complex multi-step tasks.
 
 ## Quick Start
 
