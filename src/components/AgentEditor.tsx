@@ -14,7 +14,7 @@ export function AgentEditor({ agent, onClose }: AgentEditorProps) {
     const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt || '');
     const [type, setType] = useState<'orchestrator' | 'worker'>(agent?.type || 'worker');
     const [parentId, setParentId] = useState<string | undefined>(agent?.parentId);
-    const [assignedTool, setAssignedTool] = useState<{ serverId: string, toolName: string } | null>(agent?.assignedTool || null);
+    const [assignedTool, setAssignedTool] = useState<{ serverId: string, toolName?: string } | null>(agent?.assignedTool || null);
 
     const [availableTools, setAvailableTools] = useState<{ serverId: string, toolName: string }[]>([]);
     const [orchestratorAgents, setOrchestratorAgents] = useState<Agent[]>([]);
@@ -118,19 +118,26 @@ export function AgentEditor({ agent, onClose }: AgentEditorProps) {
                 <div>
                     <label className="block text-sm font-medium text-slate-400 mb-1">Assigned Tool (Optional)</label>
                     <select
-                        value={assignedTool ? `${assignedTool.serverId}|${assignedTool.toolName}` : ''}
+                        value={assignedTool ? `${assignedTool.serverId}|${assignedTool.toolName ?? ''}` : ''}
                         onChange={e => {
                             const val = e.target.value;
                             if (!val) {
                                 setAssignedTool(null);
                             } else {
                                 const [serverId, toolName] = val.split('|');
-                                setAssignedTool({ serverId, toolName });
+                                setAssignedTool({ serverId, toolName: toolName || undefined });
                             }
                         }}
                         className="w-full bg-slate-800 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-indigo-500 outline-none"
                     >
                         <option value="">None</option>
+                        {/* One "all tools" entry per server */}
+                        {[...new Set(availableTools.map(t => t.serverId))].map(serverId => (
+                            <option key={`${serverId}|`} value={`${serverId}|`}>
+                                All tools ({serverId})
+                            </option>
+                        ))}
+                        {/* Individual tools */}
                         {availableTools.map(t => (
                             <option key={`${t.serverId}|${t.toolName}`} value={`${t.serverId}|${t.toolName}`}>
                                 {t.toolName} ({t.serverId})

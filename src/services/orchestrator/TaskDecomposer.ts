@@ -86,11 +86,16 @@ JSON:`;
         }
 
         const agentList = workers.map(a => {
-            const toolInfo = a.assignedTool ? ` (tool: ${a.assignedTool.toolName})` : '';
+            let toolInfo = '';
+            if (a.assignedTool) {
+                toolInfo = a.assignedTool.toolName
+                    ? ` (tool: ${a.assignedTool.toolName})`
+                    : ` (all tools from: ${a.assignedTool.serverId})`;
+            }
             return `- ${a.name}${toolInfo}: ${a.systemPrompt.substring(0, 120)}...`;
         }).join('\n');
 
-        const prompt = `You are a task planner. Break the user request into a sequence of subtasks. Assign each subtask to exactly one agent from the list. Order matters: earlier tasks may produce output that later tasks use.
+        const prompt = `You are a task planner. Break the user request into the minimum number of subtasks needed. Assign each subtask to exactly one agent from the list. Order matters: earlier task outputs are automatically passed as context to later tasks.
 
 User request: "${message}"
 
@@ -98,11 +103,14 @@ Available agents (use exact names):
 ${agentList}
 
 Rules:
-- Create between 2 and ${Math.min(maxSubtasks, 8)} subtasks.
+- Create between 2 and ${Math.min(maxSubtasks, 4)} subtasks. Use FEWER tasks when possible.
 - Each subtask must be assigned to one agent by name from the list above.
-- Use "dependencies" to list task indices (0-based) that must complete before this task (e.g. task 2 might depend on [0, 1]).
+- Use "dependencies" to list task indices (0-based) that must complete before this task.
 - priority: 0 for first task, 1 for second, etc.
-- Keep descriptions clear and actionable.
+- Keep descriptions clear and actionable. Include any relevant data (e.g. URLs) directly in the description.
+- IMPORTANT: Do NOT create a subtask whose only purpose is to "retrieve" or "get" data from another agent — outputs flow automatically. For example, if task 0 returns a URL, task 1 will receive it in context automatically.
+- IMPORTANT: Do NOT assign a task to an agent that doesn't have the right tools for it. A Browser Agent navigates/clicks; a Media/Knowledge agent retrieves data.
+- A "recommend then play" flow needs exactly 2 tasks: (1) get recommendation, (2) navigate to URL.
 
 Respond with valid JSON only:
 {"tasks": [

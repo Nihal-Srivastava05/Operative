@@ -6,6 +6,7 @@ import { IMcpClient } from '../mcp/interfaces';
 import { McpClient } from '../mcp/McpClient';
 import { BrowserMcpServer } from '../mcp/servers/BrowserMcpServer';
 import { KnowledgeMcpServer } from '../mcp/servers/KnowledgeMcpServer';
+import { WatchLaterMcpServer } from '../mcp/servers/WatchLaterMcpServer';
 import { extractJson } from '../../utils/jsonUtils';
 import { TaskDecomposer } from './TaskDecomposer';
 import { TaskQueue } from './TaskQueue';
@@ -38,6 +39,9 @@ export class Orchestrator {
 
         // Register Internal Knowledge MCP
         this.mcpClients.set("internal-knowledge", new InternalMcpClient(new KnowledgeMcpServer()));
+
+        // Register Internal Watch Later MCP
+        this.mcpClients.set("internal-watchlater", new InternalMcpClient(new WatchLaterMcpServer()));
 
         const settings = await db.settings.get('mcp_servers');
         if (settings && Array.isArray(settings.value)) {
@@ -293,6 +297,11 @@ JSON:`;
 
     /** Executes the current task plan sequentially until complete, then aggregates results. */
     private async executePlan(): Promise<{ response: string; agentName: string }> {
+        // Capture plan ID now — getCurrentPlan() nullifies activePlanId once the plan
+        // transitions to 'completed', so aggregateResults() would lose track of it.
+        const initialPlan = await this.taskQueue.getCurrentPlan();
+        const planId = initialPlan?.id;
+
         while (!(await this.taskQueue.isPlanComplete())) {
             const task = await this.taskQueue.getNextTask();
             if (!task) break;
@@ -309,7 +318,17 @@ JSON:`;
                     continue;
                 }
 
-                const result = await this.runner.run(agent, task.description, this.mcpClients);
+                // Inject outputs from already-completed tasks so later agents (e.g. Browser Agent)
+                // receive real data (URLs, recommendations) instead of generic descriptions.
+                const currentPlan = await this.taskQueue.getCurrentPlan();
+                const priorOutputs = currentPlan
+                    ? Object.values(currentPlan.results).filter(Boolean)
+                    : [];
+                const taskDescription = priorOutputs.length > 0
+                    ? `${task.description}\n\nContext from previous steps:\n${priorOutputs.join('\n\n')}`
+                    : task.description;
+
+                const result = await this.runner.run(agent, taskDescription, this.mcpClients);
                 await this.taskQueue.markTaskComplete(task.id, result);
             } catch (err) {
                 const errorMessage = err instanceof Error ? err.message : String(err);
@@ -318,7 +337,7 @@ JSON:`;
             }
         }
 
-        return this.taskQueue.aggregateResults();
+        return this.taskQueue.aggregateResults(planId);
     }
 
     /** Expose current task plan for UI (e.g. progress indicator). */

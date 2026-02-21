@@ -30,33 +30,25 @@ export class AgentRunner {
         prompt += agent.systemPrompt + "\n";
 
         if (tools.length > 0) {
-            const t0 = tools[0];
-            const required = Array.isArray(t0?.inputSchema?.required) ? t0.inputSchema.required : [];
-            const exampleArgs: any = {};
-            if (required.includes("url")) exampleArgs.url = "https://example.com";
-            if (required.includes("selector")) exampleArgs.selector = "input[name=\"q\"]";
-            if (required.includes("text")) exampleArgs.text = "example";
-
+            // Compact tool listing — full JSON.stringify of many tools overflows Gemini Nano's context.
             prompt += "\n=== AVAILABLE TOOLS ===\n";
-            prompt += JSON.stringify(tools, null, 2);
-
-            prompt += "\n\n=== HOW TO USE TOOLS ===\n";
-            prompt += "To use a tool, respond with ONLY a JSON object in this exact format:\n";
-            prompt += `{"tool":"<EXACT_TOOL_NAME>","arguments":{...}}\n`;
-            prompt += "Strict requirements:\n";
-            prompt += `- The JSON MUST use keys exactly named "tool" and "arguments".\n`;
-            prompt += `- Do NOT use keys like "tool_call", "toolCall", or put parameters at the top-level.\n`;
-            prompt += `- "tool" MUST be exactly one of: ${tools.map(t => t.name).join(", ")}\n`;
-            prompt += "Notes:\n";
-            prompt += "- The `arguments` object MUST satisfy the tool's `inputSchema`.\n";
-            prompt += "- If the tool has no required parameters, use an empty object: {}.\n";
-            prompt += "- After the tool runs, you will receive the tool output and should continue.\n\n";
-            prompt += "Examples:\n";
-            if (t0?.name) {
-                prompt += `- Tool call example: ${JSON.stringify({ tool: t0.name, arguments: exampleArgs })}\n`;
+            for (const t of tools) {
+                const props = t.inputSchema?.properties ?? {};
+                const required: string[] = t.inputSchema?.required ?? [];
+                const params = Object.entries(props)
+                    .map(([k, v]: [string, any]) => {
+                        const type = v.type ?? 'any';
+                        return required.includes(k) ? `${k}: ${type}` : `${k}?: ${type}`;
+                    })
+                    .join(', ');
+                prompt += `• ${t.name}(${params})\n  ${t.description}\n`;
             }
-            prompt += "- Console logs example: {\"tool\":\"get_console_logs\",\"arguments\":{}}\n";
-            prompt += "- Navigation example: {\"tool\":\"navigate\",\"arguments\":{\"url\":\"https://youtube.com\"}}\n";
+
+            prompt += "\n=== HOW TO USE TOOLS ===\n";
+            prompt += `Output ONLY this JSON to call a tool: {"tool":"TOOL_NAME","arguments":{...}}\n`;
+            prompt += `"tool" must be exactly one of: ${tools.map(t => t.name).join(", ")}\n`;
+            prompt += `Required args must be included. Optional args may be omitted.\n`;
+            prompt += `Example: {"tool":"navigate","arguments":{"url":"https://youtube.com"}}\n`;
         }
 
         return prompt;
@@ -199,7 +191,7 @@ export class AgentRunner {
     public async run(agent: Agent, task: string, mcpClients: Map<string, IMcpClient>): Promise<string> {
         // 1. Gather tools
         let tools: any[] = [];
-        let toolSchema: any | null = null;
+        let toolSchema: any | null = null; // used only in single-tool mode for upfront validation
         if (agent.assignedTool) {
             const client = mcpClients.get(agent.assignedTool.serverId);
             if (!client) {
@@ -207,13 +199,19 @@ export class AgentRunner {
             }
             try {
                 const serverTools = await client.listTools();
-                const t = serverTools.find(t => t.name === agent.assignedTool!.toolName);
-                if (!t) {
-                    const available = serverTools.map(st => st.name).slice(0, 15).join(", ");
-                    return `Tool "${agent.assignedTool.toolName}" was not found on server "${agent.assignedTool.serverId}". Available tools: ${available}${serverTools.length > 15 ? ", ..." : ""}`;
+                if (agent.assignedTool.toolName) {
+                    // Single-tool mode
+                    const t = serverTools.find(t => t.name === agent.assignedTool!.toolName);
+                    if (!t) {
+                        const available = serverTools.map(st => st.name).slice(0, 15).join(", ");
+                        return `Tool "${agent.assignedTool.toolName}" was not found on server "${agent.assignedTool.serverId}". Available tools: ${available}${serverTools.length > 15 ? ", ..." : ""}`;
+                    }
+                    tools.push(t);
+                    toolSchema = t;
+                } else {
+                    // All-tools-from-server mode
+                    tools = serverTools;
                 }
-                tools.push(t);
-                toolSchema = t;
             } catch (e) {
                 console.error("Failed to fetch tools", e);
                 return `Failed to fetch tools from server "${agent.assignedTool.serverId}". Error: ${String(e)}`;
@@ -241,6 +239,7 @@ export class AgentRunner {
         let nudged = false;
 
         // 4. Check for Tool Call (Basic JSON detection)
+        let lastSuccessfulToolResult: any = null;
         while (currentTurn < maxTurns) {
             try {
                 const toolCall = this.extractToolCall(response);
@@ -265,15 +264,18 @@ export class AgentRunner {
 
                             const args = this.normalizeToolArgs(normalizedTool, toolCall.args);
 
-                            // Validate required args (prevents silent mis-shaped calls like {input:...} for type_input)
-                            if (toolSchema && toolSchema.name === normalizedTool) {
-                                const missing = this.missingRequiredArgs(toolSchema, args);
+                            // Validate required args — look up schema by name so multi-tool mode works too
+                            const activeSchema = toolSchema?.name === normalizedTool
+                                ? toolSchema
+                                : (tools.find(t => t.name === normalizedTool) ?? null);
+                            if (activeSchema) {
+                                const missing = this.missingRequiredArgs(activeSchema, args);
                                 if (missing.length > 0) {
                                     response = await this.ai.generate(
                                         `Your tool call arguments are missing required field(s): ${missing.join(", ")}.\n` +
                                         `Tool: ${normalizedTool}\n` +
                                         `You MUST output ONLY corrected JSON: {"tool":"${normalizedTool}","arguments":{...}}.\n` +
-                                        `Reminder: required fields are: ${(toolSchema.inputSchema?.required ?? []).join(", ")}\n\n` +
+                                        `Reminder: required fields are: ${(activeSchema.inputSchema?.required ?? []).join(", ")}\n\n` +
                                         `User request: ${task}\n\nJSON:`,
                                         session
                                     );
@@ -284,10 +286,22 @@ export class AgentRunner {
 
                             console.log(`[${agent.name}] Executing tool '${normalizedTool}' with args:`, args);
                             const result = await client.callTool(normalizedTool, args);
-
-                            // Feed back
-                            const toolOutput = `Tool '${normalizedTool}' output: ${JSON.stringify(result)}`;
+                            lastSuccessfulToolResult = result;
                             console.log(`[${agent.name}] Tool output received, generating follow-up...`);
+
+                            // If the tool returned a ready-made user-facing message (e.g. recommend_video,
+                            // store_knowledge), use it directly — don't re-prompt the model, which
+                            // often causes it to chain another tool call instead of answering.
+                            if (typeof result?.message === 'string' && result.message.length > 10) {
+                                response = result.message;
+                                break;
+                            }
+
+                            // Otherwise feed the result back and ask for a plain-English summary.
+                            const toolOutput =
+                                `Tool '${normalizedTool}' result:\n${JSON.stringify(result, null, 2)}\n\n` +
+                                `Write a plain-English response to the user. Include any URL or title from the result. ` +
+                                `Do NOT output JSON or call another tool.`;
                             response = await this.ai.generate(toolOutput, session);
                             currentTurn++;
                             continue;
@@ -322,7 +336,15 @@ export class AgentRunner {
         }
 
         if (currentTurn >= maxTurns) {
-            response += "\n\n(Agent reached maximum turn limit for tool calls)";
+            // If the model got stuck outputting JSON, surface the last tool result instead.
+            const stuckOnJson = this.extractToolCall(response) !== null;
+            if (stuckOnJson && typeof lastSuccessfulToolResult?.message === 'string') {
+                response = lastSuccessfulToolResult.message;
+            } else if (stuckOnJson) {
+                response = lastSuccessfulToolResult
+                    ? `Task completed. Result: ${JSON.stringify(lastSuccessfulToolResult)}`
+                    : "I wasn't able to complete the task — please try again.";
+            }
         }
 
         try {

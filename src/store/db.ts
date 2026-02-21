@@ -9,7 +9,7 @@ export interface Agent {
     parentId?: string;
     assignedTool?: {
         serverId: string;
-        toolName: string;
+        toolName?: string; // undefined = all tools from this server
     };
     createdAt: number;
 }
@@ -63,6 +63,31 @@ export interface Knowledge {
     createdAt: number;
 }
 
+export interface WatchLaterItem {
+    id: string;
+    url: string;
+    videoId: string;
+    title: string;
+    channel: string;
+    durationSeconds: number;
+    thumbnail: string;
+    addedAt: number;
+    watchedAt?: number;
+    tags: string[];
+    embedding: number[];
+}
+
+export interface Note {
+    id: string;
+    title?: string;
+    content: string;
+    tags: string[];
+    source?: string;
+    createdAt: number;
+    updatedAt: number;
+    embedding: number[];
+}
+
 const db = new Dexie('OperativeDB') as Dexie & {
     agents: EntityTable<Agent, 'id'>;
     messages: EntityTable<Message, 'id'>;
@@ -70,6 +95,8 @@ const db = new Dexie('OperativeDB') as Dexie & {
     tasks: EntityTable<Task, 'id'>;
     taskPlans: EntityTable<TaskPlanRecord, 'id'>;
     knowledge: EntityTable<Knowledge, 'id'>;
+    watchLater: EntityTable<WatchLaterItem, 'id'>;
+    notes: EntityTable<Note, 'id'>;
 };
 
 db.version(1).stores({
@@ -91,6 +118,17 @@ db.version(3).stores({
     tasks: 'id, planId, status',
     taskPlans: 'id, status',
     knowledge: 'id, content, createdAt'
+});
+
+db.version(4).stores({
+    agents:    'id, name, type, enabled, parentId',
+    messages:  '++id, agentId, timestamp',
+    settings:  'key',
+    tasks:     'id, planId, status',
+    taskPlans: 'id, status',
+    knowledge: 'id, content, createdAt',
+    watchLater:'id, videoId, addedAt, watchedAt, durationSeconds',
+    notes:     'id, createdAt, updatedAt'
 });
 
 export { db };
