@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Users, Zap, Trash2, ExternalLink } from 'lucide-react';
+import { Play, Users, Zap, Trash2, ExternalLink, ArrowRight, CheckCircle, Loader, AlertCircle } from 'lucide-react';
 import { db, Agent } from '../store/db';
 
 interface SpawnedAgent {
@@ -10,6 +10,16 @@ interface SpawnedAgent {
   tabId?: number;
 }
 
+interface WorkflowStep {
+  agentId: string;
+  agentName: string;
+  status: 'pending' | 'running' | 'complete' | 'error';
+  input?: string;
+  output?: string;
+  startTime?: number;
+  endTime?: number;
+}
+
 const CHANNELS = {
   SYSTEM: 'operative:system',
   TASKS: 'operative:tasks',
@@ -18,14 +28,17 @@ const CHANNELS = {
 export function MultiAgentPanel() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [spawnedAgents, setSpawnedAgents] = useState<SpawnedAgent[]>([]);
-  const [logs, setLogs] = useState<string[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string>('');
-  const [taskInput, setTaskInput] = useState('');
+  const [userPrompt, setUserPrompt] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([]);
+  const [finalResult, setFinalResult] = useState<string>('');
 
   const systemChannelRef = useRef<BroadcastChannel | null>(null);
   const tasksChannelRef = useRef<BroadcastChannel | null>(null);
   const panelId = useRef(`panel_${Date.now()}`);
+  const pendingTaskRef = useRef<string>('');
+  const currentStepRef = useRef<number>(0);
 
   // Load agent definitions
   useEffect(() => {
@@ -45,19 +58,11 @@ export function MultiAgentPanel() {
     systemChannelRef.current = new BroadcastChannel(CHANNELS.SYSTEM);
     tasksChannelRef.current = new BroadcastChannel(CHANNELS.TASKS);
 
-    // Listen for system messages
     systemChannelRef.current.onmessage = (event) => {
       const message = event.data;
-      if (!message) return;
-
-      // Ignore our own messages
-      if (message.source?.id === panelId.current) return;
-
-      const sourceId = message.source?.id || 'unknown';
-      const shortId = sourceId.substring(0, 12);
+      if (!message || message.source?.id === panelId.current) return;
 
       if (message.type === 'lifecycle:ready') {
-        addLog(`[lifecycle:ready] Agent ${shortId} is ready`);
         setSpawnedAgents(prev =>
           prev.map(a =>
             a.id === message.source?.id ? { ...a, status: 'ready' } : a
@@ -65,30 +70,16 @@ export function MultiAgentPanel() {
         );
       }
 
-      if (message.type === 'registry:register') {
-        addLog(`[registry:register] Agent ${shortId} registered`);
-      }
-
-      if (message.type === 'heartbeat:ping') {
-        addLog(`[heartbeat:ping] from ${shortId}`);
-      }
-
       if (message.type === 'lifecycle:terminated') {
-        addLog(`[lifecycle:terminated] Agent ${shortId}`);
         setSpawnedAgents(prev => prev.filter(a => a.id !== message.source?.id));
       }
     };
 
-    // Listen for task messages
     tasksChannelRef.current.onmessage = (event) => {
       const message = event.data;
       if (!message || message.source?.id === panelId.current) return;
 
-      const sourceId = message.source?.id || 'unknown';
-      const shortId = sourceId.substring(0, 12);
-
       if (message.type === 'task:accept') {
-        addLog(`[task:accept] Agent ${shortId} accepted task`);
         setSpawnedAgents(prev =>
           prev.map(a =>
             a.id === message.source?.id ? { ...a, status: 'busy' } : a
@@ -97,9 +88,8 @@ export function MultiAgentPanel() {
       }
 
       if (message.type === 'task:result') {
-        const result = message.payload?.result;
-        const preview = typeof result === 'string' ? result.substring(0, 60) : JSON.stringify(result).substring(0, 60);
-        addLog(`[task:result] ${shortId}: ${preview}...`);
+        const result = message.payload?.result || '';
+        handleTaskResult(message.source?.id, result);
         setSpawnedAgents(prev =>
           prev.map(a =>
             a.id === message.source?.id ? { ...a, status: 'ready' } : a
@@ -108,7 +98,7 @@ export function MultiAgentPanel() {
       }
 
       if (message.type === 'task:error') {
-        addLog(`[task:error] ${shortId}: ${message.payload?.error}`);
+        handleTaskError(message.source?.id, message.payload?.error);
         setSpawnedAgents(prev =>
           prev.map(a =>
             a.id === message.source?.id ? { ...a, status: 'ready' } : a
@@ -123,210 +113,174 @@ export function MultiAgentPanel() {
     };
   }, []);
 
-  const addLog = (msg: string) => {
-    setLogs(prev => [...prev.slice(-29), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  const handleTaskResult = (agentId: string, result: string) => {
+    const stepIndex = currentStepRef.current;
+
+    setWorkflowSteps(prev => {
+      const updated = [...prev];
+      if (updated[stepIndex]) {
+        updated[stepIndex] = {
+          ...updated[stepIndex],
+          status: 'complete',
+          output: result,
+          endTime: Date.now()
+        };
+      }
+      return updated;
+    });
+
+    // Check if there's a next step
+    const nextStepIndex = stepIndex + 1;
+    setTimeout(() => {
+      setWorkflowSteps(prev => {
+        if (nextStepIndex < prev.length) {
+          // Run next step with this output as input
+          currentStepRef.current = nextStepIndex;
+          runWorkflowStep(nextStepIndex, result, prev);
+        } else {
+          // Workflow complete
+          setFinalResult(result);
+          setIsRunning(false);
+        }
+        return prev;
+      });
+    }, 500);
   };
 
-  const createMessage = (type: string, target: any, payload: any) => {
-    return {
-      id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-      type,
-      source: {
-        id: panelId.current,
-        definitionId: 'system:panel',
-        contextType: 'side-panel',
-      },
-      target,
-      payload,
-      timestamp: Date.now(),
-    };
+  const handleTaskError = (agentId: string, error: string) => {
+    const stepIndex = currentStepRef.current;
+    setWorkflowSteps(prev => {
+      const updated = [...prev];
+      if (updated[stepIndex]) {
+        updated[stepIndex] = {
+          ...updated[stepIndex],
+          status: 'error',
+          output: `Error: ${error}`,
+          endTime: Date.now()
+        };
+      }
+      return updated;
+    });
+    setIsRunning(false);
   };
+
+  const createMessage = (type: string, target: any, payload: any) => ({
+    id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+    type,
+    source: { id: panelId.current, definitionId: 'system:panel', contextType: 'side-panel' },
+    target,
+    payload,
+    timestamp: Date.now(),
+  });
 
   const spawnAgent = async () => {
     if (!selectedAgent) return;
-
     const agent = agents.find(a => a.id === selectedAgent);
     if (!agent) return;
 
     const agentId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    addLog(`Spawning ${agent.name} in new tab...`);
-
-    const newSpawned: SpawnedAgent = {
+    setSpawnedAgents(prev => [...prev, {
       id: agentId,
       definitionId: agent.id,
       name: agent.name,
       status: 'spawning',
-    };
-
-    setSpawnedAgents(prev => [...prev, newSpawned]);
+    }]);
 
     try {
-      const url = chrome.runtime.getURL(
-        `agent.html?agentId=${agentId}&definitionId=${encodeURIComponent(agent.id)}`
-      );
-
+      const url = chrome.runtime.getURL(`agent.html?agentId=${agentId}&definitionId=${encodeURIComponent(agent.id)}`);
       const tab = await chrome.tabs.create({ url, active: false });
-
-      setSpawnedAgents(prev =>
-        prev.map(a =>
-          a.id === agentId ? { ...a, tabId: tab.id } : a
-        )
-      );
-
-      addLog(`Tab ${tab.id} created for ${agent.name}`);
+      setSpawnedAgents(prev => prev.map(a => a.id === agentId ? { ...a, tabId: tab.id } : a));
     } catch (error: any) {
-      addLog(`Error: ${error.message}`);
-      setSpawnedAgents(prev =>
-        prev.map(a =>
-          a.id === agentId ? { ...a, status: 'error' } : a
-        )
-      );
+      setSpawnedAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: 'error' } : a));
     }
-  };
-
-  const sendTaskToAgent = async (targetAgentId: string) => {
-    if (!taskInput.trim() || !tasksChannelRef.current) return;
-
-    const taskId = `task_${Date.now()}`;
-    addLog(`Sending task to agent...`);
-
-    const message = createMessage('task:delegate', { type: 'agent', agentId: targetAgentId }, {
-      taskId,
-      task: taskInput,
-      priority: 'normal',
-    });
-
-    tasksChannelRef.current.postMessage(message);
-    addLog(`Task sent: "${taskInput.substring(0, 40)}..."`);
-    setTaskInput('');
   };
 
   const terminateAgent = async (agentId: string, tabId?: number) => {
-    addLog(`Terminating agent...`);
-
     if (systemChannelRef.current) {
-      const message = createMessage('lifecycle:terminate', { type: 'agent', agentId }, {
-        reason: 'requested',
-        graceful: true,
-      });
-      systemChannelRef.current.postMessage(message);
+      systemChannelRef.current.postMessage(createMessage('lifecycle:terminate', { type: 'agent', agentId }, { reason: 'requested', graceful: true }));
     }
-
     if (tabId) {
-      try {
-        await chrome.tabs.remove(tabId);
-      } catch (e) {
-        // Tab might already be closed
-      }
+      try { await chrome.tabs.remove(tabId); } catch (e) {}
     }
-
     setSpawnedAgents(prev => prev.filter(a => a.id !== agentId));
-    addLog(`Agent terminated`);
   };
 
-  // Store results for chained workflow
-  const workflowResultsRef = useRef<Map<string, string>>(new Map());
+  const runWorkflowStep = (stepIndex: number, input: string, steps: WorkflowStep[]) => {
+    const step = steps[stepIndex];
+    if (!step || !tasksChannelRef.current) return;
 
-  const runWorkflowDemo = async () => {
-    const readyAgents = spawnedAgents.filter(a => a.status === 'ready');
-    if (readyAgents.length < 2 || !tasksChannelRef.current) {
-      addLog('Need at least 2 ready agents for workflow demo');
-      return;
+    // Build the task with context from previous step
+    let taskPrompt = '';
+    if (stepIndex === 0) {
+      taskPrompt = input; // First step gets user's original prompt
+    } else {
+      taskPrompt = `Previous agent's output:\n"""${input}"""\n\nYour task: Continue this work. Analyze, improve, fact-check, or expand on the above content based on your expertise.`;
     }
+
+    setWorkflowSteps(prev => {
+      const updated = [...prev];
+      updated[stepIndex] = { ...updated[stepIndex], status: 'running', input: input, startTime: Date.now() };
+      return updated;
+    });
+
+    const taskId = `workflow_${Date.now()}_step${stepIndex}`;
+    pendingTaskRef.current = taskId;
+
+    const msg = createMessage('task:delegate', { type: 'agent', agentId: step.agentId }, {
+      taskId,
+      task: taskPrompt,
+      priority: 'high',
+    });
+    tasksChannelRef.current.postMessage(msg);
+  };
+
+  const startWorkflow = () => {
+    const readyAgents = spawnedAgents.filter(a => a.status === 'ready');
+    if (readyAgents.length < 1 || !userPrompt.trim()) return;
 
     setIsRunning(true);
-    workflowResultsRef.current.clear();
-    addLog('🔗 Starting CHAINED workflow (Agent1 → Agent2)...');
-    addLog(`Step 1: ${readyAgents[0].name} will write content`);
-    addLog(`Step 2: ${readyAgents[1].name} will review/improve it`);
+    setFinalResult('');
+    currentStepRef.current = 0;
 
-    const task1Id = `chain_${Date.now()}_step1`;
+    // Create workflow steps from all ready agents
+    const steps: WorkflowStep[] = readyAgents.map(agent => ({
+      agentId: agent.id,
+      agentName: agent.name,
+      status: 'pending' as const,
+    }));
 
-    // Listen for task1 result to chain to task2
-    const handleChainResult = (event: MessageEvent) => {
-      const message = event.data;
-      if (!message || message.type !== 'task:result') return;
+    setWorkflowSteps(steps);
 
-      const taskId = message.payload?.taskId;
-      const result = message.payload?.result;
-
-      if (taskId === task1Id && result) {
-        addLog(`✅ Step 1 complete! Output: "${result.substring(0, 50)}..."`);
-        workflowResultsRef.current.set('step1', result);
-
-        // NOW send to Agent 2 with Agent 1's output
-        addLog(`🔗 Passing output to ${readyAgents[1].name} for review...`);
-
-        const task2Id = `chain_${Date.now()}_step2`;
-        const chainedTask = `Review and improve this content. Add any missing facts or corrections:\n\n"${result}"`;
-
-        const msg2 = createMessage('task:delegate', { type: 'agent', agentId: readyAgents[1].id }, {
-          taskId: task2Id,
-          task: chainedTask,
-          priority: 'normal',
-          context: { previousOutput: result, step: 2 }
-        });
-        tasksChannelRef.current?.postMessage(msg2);
-        addLog(`📤 Step 2 task sent with Step 1 output`);
-      }
-
-      // Check for step 2 completion
-      if (taskId?.includes('step2') && result) {
-        addLog(`✅ Step 2 complete! Final output: "${result.substring(0, 60)}..."`);
-        addLog('🎉 WORKFLOW COMPLETE: Agent1 → Agent2 chain finished!');
-        setIsRunning(false);
-        tasksChannelRef.current?.removeEventListener('message', handleChainResult as any);
-      }
-    };
-
-    tasksChannelRef.current.addEventListener('message', handleChainResult as any);
-
-    // Start the chain with Agent 1
-    const msg1 = createMessage('task:delegate', { type: 'agent', agentId: readyAgents[0].id }, {
-      taskId: task1Id,
-      task: 'Write 2-3 sentences about the benefits of exercise for mental health.',
-      priority: 'normal',
-      context: { step: 1 }
-    });
-    tasksChannelRef.current.postMessage(msg1);
-    addLog(`📤 Step 1 task sent to ${readyAgents[0].name}`);
-
-    // Timeout safety
+    // Start first step after state updates
     setTimeout(() => {
-      if (isRunning) {
-        setIsRunning(false);
-        addLog('⚠️ Workflow timeout');
-      }
-    }, 60000);
+      runWorkflowStep(0, userPrompt, steps);
+    }, 100);
   };
 
-  const readyCount = spawnedAgents.filter(a => a.status === 'ready').length;
+  const readyAgents = spawnedAgents.filter(a => a.status === 'ready');
 
   return (
     <div className="h-full flex flex-col p-4 overflow-hidden">
-      <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+      <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
         <Users className="w-5 h-5 text-indigo-400" />
-        Multi-Agent Control Panel
+        Multi-Agent Workflow
       </h2>
 
       {/* Spawn Section */}
       <div className="bg-slate-800 rounded-lg p-3 mb-3">
-        <h3 className="text-sm font-medium text-slate-400 mb-2">Spawn Agent in Tab</h3>
         <div className="flex gap-2">
           <select
             value={selectedAgent}
             onChange={(e) => setSelectedAgent(e.target.value)}
             className="flex-1 bg-slate-700 border border-slate-600 rounded p-2 text-sm"
           >
-            {agents.length === 0 && <option value="">No agents available</option>}
-            {agents.map(a => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
+            {agents.length === 0 && <option value="">No agents</option>}
+            {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
           <button
             onClick={spawnAgent}
             disabled={!selectedAgent}
-            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-4 py-2 rounded flex items-center gap-1 text-sm"
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-3 py-2 rounded flex items-center gap-1 text-sm"
           >
             <ExternalLink className="w-4 h-4" />
             Spawn
@@ -334,91 +288,150 @@ export function MultiAgentPanel() {
         </div>
       </div>
 
-      {/* Active Agents */}
-      <div className="bg-slate-800 rounded-lg p-3 mb-3 flex-1 overflow-auto min-h-[120px]">
-        <h3 className="text-sm font-medium text-slate-400 mb-2">
-          Active Agents ({spawnedAgents.length}) - Ready: {readyCount}
+      {/* Active Agents as Pipeline */}
+      <div className="bg-slate-800 rounded-lg p-3 mb-3">
+        <h3 className="text-xs font-medium text-slate-400 mb-2">
+          Agent Pipeline ({spawnedAgents.length} agents)
         </h3>
         {spawnedAgents.length === 0 ? (
-          <p className="text-slate-500 text-sm">No agents spawned yet.</p>
+          <p className="text-slate-500 text-sm">Spawn agents to build your workflow pipeline</p>
         ) : (
-          <div className="space-y-2">
-            {spawnedAgents.map(agent => (
-              <div
-                key={agent.id}
-                className="bg-slate-700 rounded p-2 flex items-center justify-between"
-              >
-                <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 flex-wrap">
+            {spawnedAgents.map((agent, idx) => (
+              <React.Fragment key={agent.id}>
+                <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
+                  agent.status === 'ready' ? 'bg-green-900/30 border border-green-700' :
+                  agent.status === 'busy' ? 'bg-yellow-900/30 border border-yellow-700' :
+                  agent.status === 'error' ? 'bg-red-900/30 border border-red-700' :
+                  'bg-slate-700 border border-slate-600'
+                }`}>
                   <div className={`w-2 h-2 rounded-full ${
                     agent.status === 'ready' ? 'bg-green-500' :
                     agent.status === 'busy' ? 'bg-yellow-500 animate-pulse' :
                     agent.status === 'error' ? 'bg-red-500' :
                     'bg-blue-500 animate-pulse'
                   }`} />
-                  <span className="text-sm font-medium">{agent.name}</span>
-                  <span className="text-xs text-slate-400">({agent.status})</span>
-                </div>
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => sendTaskToAgent(agent.id)}
-                    disabled={agent.status !== 'ready' || !taskInput.trim()}
-                    className="p-1.5 hover:bg-slate-600 rounded disabled:opacity-30"
-                    title="Send task"
-                  >
-                    <Play className="w-4 h-4" />
-                  </button>
+                  <span className="font-medium">{agent.name}</span>
                   <button
                     onClick={() => terminateAgent(agent.id, agent.tabId)}
-                    className="p-1.5 hover:bg-slate-600 rounded text-red-400"
-                    title="Terminate"
+                    className="text-red-400 hover:text-red-300 ml-1"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-3 h-3" />
                   </button>
                 </div>
-              </div>
+                {idx < spawnedAgents.length - 1 && (
+                  <ArrowRight className="w-4 h-4 text-indigo-400" />
+                )}
+              </React.Fragment>
             ))}
           </div>
         )}
       </div>
 
-      {/* Task Input */}
+      {/* Workflow Input */}
       <div className="bg-slate-800 rounded-lg p-3 mb-3">
-        <h3 className="text-sm font-medium text-slate-400 mb-2">Send Task</h3>
-        <input
-          value={taskInput}
-          onChange={(e) => setTaskInput(e.target.value)}
-          placeholder="Enter task for selected agent..."
-          className="w-full bg-slate-700 border border-slate-600 rounded p-2 text-sm mb-2"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && readyCount > 0 && taskInput.trim()) {
-              const readyAgent = spawnedAgents.find(a => a.status === 'ready');
-              if (readyAgent) sendTaskToAgent(readyAgent.id);
-            }
-          }}
+        <h3 className="text-xs font-medium text-slate-400 mb-2">Your Prompt (flows through all agents)</h3>
+        <textarea
+          value={userPrompt}
+          onChange={(e) => setUserPrompt(e.target.value)}
+          placeholder="Enter your request... Each agent will process and pass to the next."
+          className="w-full bg-slate-700 border border-slate-600 rounded p-2 text-sm h-20 resize-none"
+          disabled={isRunning}
         />
         <button
-          onClick={runWorkflowDemo}
-          disabled={isRunning || readyCount < 2}
-          className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 px-4 py-2 rounded flex items-center justify-center gap-2 text-sm"
+          onClick={startWorkflow}
+          disabled={isRunning || readyAgents.length < 1 || !userPrompt.trim()}
+          className="w-full mt-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded flex items-center justify-center gap-2 text-sm font-medium"
         >
-          <Zap className="w-4 h-4" />
-          {isRunning ? 'Running...' : 'Run Chained Workflow (A→B)'}
+          {isRunning ? (
+            <><Loader className="w-4 h-4 animate-spin" /> Running Pipeline...</>
+          ) : (
+            <><Zap className="w-4 h-4" /> Run Through {readyAgents.length} Agent{readyAgents.length !== 1 ? 's' : ''}</>
+          )}
         </button>
       </div>
 
-      {/* Logs */}
-      <div className="bg-slate-900 rounded-lg p-3 max-h-36 overflow-auto">
-        <h3 className="text-sm font-medium text-slate-400 mb-2">Activity Log</h3>
-        <div className="font-mono text-xs space-y-0.5">
-          {logs.length === 0 ? (
-            <p className="text-slate-500">No activity yet...</p>
-          ) : (
-            logs.map((log, i) => (
-              <div key={i} className="text-slate-400 leading-tight">{log}</div>
-            ))
+      {/* Workflow Execution Visualization */}
+      {workflowSteps.length > 0 && (
+        <div className="bg-slate-900 rounded-lg p-3 flex-1 overflow-auto">
+          <h3 className="text-xs font-medium text-slate-400 mb-3">Execution Flow</h3>
+
+          <div className="space-y-3">
+            {workflowSteps.map((step, idx) => (
+              <div key={idx} className={`rounded-lg p-3 ${
+                step.status === 'running' ? 'bg-yellow-900/20 border border-yellow-700/50' :
+                step.status === 'complete' ? 'bg-green-900/20 border border-green-700/50' :
+                step.status === 'error' ? 'bg-red-900/20 border border-red-700/50' :
+                'bg-slate-800 border border-slate-700'
+              }`}>
+                {/* Step Header */}
+                <div className="flex items-center gap-2 mb-2">
+                  {step.status === 'pending' && <div className="w-5 h-5 rounded-full border-2 border-slate-500" />}
+                  {step.status === 'running' && <Loader className="w-5 h-5 text-yellow-400 animate-spin" />}
+                  {step.status === 'complete' && <CheckCircle className="w-5 h-5 text-green-400" />}
+                  {step.status === 'error' && <AlertCircle className="w-5 h-5 text-red-400" />}
+
+                  <span className="font-medium text-sm">Step {idx + 1}: {step.agentName}</span>
+
+                  {step.endTime && step.startTime && (
+                    <span className="text-xs text-slate-500 ml-auto">
+                      {((step.endTime - step.startTime) / 1000).toFixed(1)}s
+                    </span>
+                  )}
+                </div>
+
+                {/* Input */}
+                {step.input && (
+                  <div className="mb-2">
+                    <div className="text-xs text-slate-500 mb-1">📥 Input:</div>
+                    <div className="bg-slate-800 rounded p-2 text-xs text-slate-300 max-h-16 overflow-auto">
+                      {step.input.substring(0, 200)}{step.input.length > 200 ? '...' : ''}
+                    </div>
+                  </div>
+                )}
+
+                {/* Output */}
+                {step.output && (
+                  <div>
+                    <div className="text-xs text-slate-500 mb-1">📤 Output:</div>
+                    <div className={`rounded p-2 text-xs max-h-24 overflow-auto ${
+                      step.status === 'error' ? 'bg-red-900/30 text-red-300' : 'bg-indigo-900/30 text-indigo-200'
+                    }`}>
+                      {step.output}
+                    </div>
+                  </div>
+                )}
+
+                {/* Arrow to next */}
+                {idx < workflowSteps.length - 1 && step.status === 'complete' && (
+                  <div className="flex justify-center mt-2">
+                    <ArrowRight className="w-4 h-4 text-indigo-400 rotate-90" />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Final Result */}
+          {finalResult && (
+            <div className="mt-4 p-3 bg-gradient-to-r from-green-900/30 to-indigo-900/30 rounded-lg border border-green-700/50">
+              <div className="text-xs text-green-400 font-medium mb-2">🎉 Final Result (after {workflowSteps.length} agents)</div>
+              <div className="text-sm text-slate-200">{finalResult}</div>
+            </div>
           )}
         </div>
-      </div>
+      )}
+
+      {/* Empty State */}
+      {workflowSteps.length === 0 && (
+        <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
+          <div className="text-center">
+            <Users className="w-12 h-12 mx-auto mb-2 opacity-30" />
+            <p>Spawn agents, enter a prompt, and watch</p>
+            <p>your request flow through each agent!</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
