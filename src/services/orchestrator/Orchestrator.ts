@@ -6,6 +6,7 @@ import { IMcpClient } from '../mcp/interfaces';
 import { McpClient } from '../mcp/McpClient';
 import { BrowserMcpServer } from '../mcp/servers/BrowserMcpServer';
 import { KnowledgeMcpServer } from '../mcp/servers/KnowledgeMcpServer';
+import { WatchLaterMcpServer } from '../mcp/servers/WatchLaterMcpServer';
 import { extractJson } from '../../utils/jsonUtils';
 import { TaskDecomposer } from './TaskDecomposer';
 import { TaskQueue } from './TaskQueue';
@@ -38,6 +39,9 @@ export class Orchestrator {
 
         // Register Internal Knowledge MCP
         this.mcpClients.set("internal-knowledge", new InternalMcpClient(new KnowledgeMcpServer()));
+
+        // Register Internal Watch Later MCP
+        this.mcpClients.set("internal-watchlater", new InternalMcpClient(new WatchLaterMcpServer()));
 
         const settings = await db.settings.get('mcp_servers');
         if (settings && Array.isArray(settings.value)) {
@@ -81,7 +85,7 @@ export class Orchestrator {
     }
 
     /** Reusable router: pick one candidate from the list (LLM + validation). Returns agent + refined task or null. */
-    private async routeRequest(message: string, candidates: Agent[]): Promise<{ agent: Agent; task: string } | null> {
+    private async routeRequest(message: string, candidates: Agent[], recentContext?: string): Promise<{ agent: Agent; task: string } | null> {
         if (candidates.length === 0) return null;
         if (candidates.length === 1) return { agent: candidates[0], task: message };
 
@@ -95,17 +99,22 @@ export class Orchestrator {
         let lastError = '';
 
         while (attempt < 2) {
+            const contextSection = recentContext
+                ? `\nPrevious assistant response (for context):\n"${recentContext.substring(0, 300)}"\n`
+                : '';
+
             const routerPrompt = `Task: Route the user request to the correct option.
 Response format: Valid JSON only.
 
 Available options:
 ${agentList}
-
+${contextSection}
 User Request: "${message}"
 
 Respond with a single JSON object: {"agentName":"<name from list OR None>","task":"<rewritten task or user request>"}
 - Choose from the list only. If none fit, use "None".
 - "task" must be actionable; if unsure, repeat the user request.
+- If the user request starts with "no" followed by a new instruction, ignore the "no" and use the instruction that follows.
 - Output ONLY the JSON.
 ${lastError ? `\nPrevious error: ${lastError}` : ''}
 
@@ -181,7 +190,7 @@ JSON:`;
         return null;
     }
 
-    public async handleUserMessage(message: string): Promise<{ response: string; agentName: string }> {
+    public async handleUserMessage(message: string, recentContext?: string): Promise<{ response: string; agentName: string }> {
         const rootCandidates = await this.getRootCandidates();
 
         if (rootCandidates.length === 0) {
@@ -229,7 +238,7 @@ JSON:`;
                 const response = await this.runner.run(children[0], message, this.mcpClients);
                 return { response, agentName: children[0].name };
             }
-            const routed = await this.routeRequest(message, children);
+            const routed = await this.routeRequest(message, children, recentContext);
             if (routed) {
                 const response = await this.runner.run(routed.agent, routed.task, this.mcpClients);
                 return { response, agentName: routed.agent.name };
@@ -246,7 +255,7 @@ JSON:`;
         }
 
         // Meta-level routing among root candidates (orchestrators + top-level workers)
-        let routed = await this.routeRequest(message, rootCandidates);
+        let routed = await this.routeRequest(message, rootCandidates, recentContext);
         if (!routed) {
             const fallback = await this.keywordFallback(message, rootCandidates);
             if (fallback) {
@@ -293,6 +302,28 @@ JSON:`;
 
     /** Executes the current task plan sequentially until complete, then aggregates results. */
     private async executePlan(): Promise<{ response: string; agentName: string }> {
+        // Capture plan ID now — getCurrentPlan() nullifies activePlanId once the plan
+        // transitions to 'completed', so aggregateResults() would lose track of it.
+        const initialPlan = await this.taskQueue.getCurrentPlan();
+        const planId = initialPlan?.id;
+
+        // Per-agent wall-clock timeout. Gemini Nano can stall indefinitely on ai.generate();
+        // this prevents the plan from hanging forever if a model call never resolves.
+        const AGENT_TIMEOUT_MS = 90_000;
+
+        // Reset any tasks left in_progress from a previous crashed/timed-out run.
+        // Without this, getNextTask() returns null (no pending tasks) and the plan
+        // immediately "completes" with stale results from the prior run.
+        const stalePlan = await this.taskQueue.getCurrentPlan();
+        if (stalePlan) {
+            for (const t of stalePlan.tasks) {
+                if (t.status === 'in_progress') {
+                    console.warn(`[Orchestrator] Resetting stale in_progress task: ${t.id}`);
+                    await this.taskQueue.markTaskFailed(t.id, 'Interrupted by previous session timeout or restart');
+                }
+            }
+        }
+
         while (!(await this.taskQueue.isPlanComplete())) {
             const task = await this.taskQueue.getNextTask();
             if (!task) break;
@@ -309,8 +340,33 @@ JSON:`;
                     continue;
                 }
 
-                const result = await this.runner.run(agent, task.description, this.mcpClients);
-                await this.taskQueue.markTaskComplete(task.id, result);
+                // Inject outputs from already-completed tasks so later agents (e.g. Browser Agent)
+                // receive real data (URLs, recommendations) instead of generic descriptions.
+                const currentPlan = await this.taskQueue.getCurrentPlan();
+                const priorOutputs = currentPlan
+                    ? Object.values(currentPlan.results).filter(Boolean)
+                    : [];
+                const taskDescription = priorOutputs.length > 0
+                    ? `${task.description}\n\nContext from previous steps:\n${priorOutputs.join('\n\n')}`
+                    : task.description;
+
+                let timeoutId: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    const result = await Promise.race([
+                        this.runner.run(agent, taskDescription, this.mcpClients),
+                        new Promise<string>((_, reject) => {
+                            timeoutId = setTimeout(
+                                () => reject(new Error(`Agent "${agent.name}" did not respond within ${AGENT_TIMEOUT_MS / 1000}s — Gemini Nano may be busy`)),
+                                AGENT_TIMEOUT_MS
+                            );
+                        })
+                    ]);
+                    clearTimeout(timeoutId);
+                    await this.taskQueue.markTaskComplete(task.id, result);
+                } catch (raceErr) {
+                    clearTimeout(timeoutId);
+                    throw raceErr;
+                }
             } catch (err) {
                 const errorMessage = err instanceof Error ? err.message : String(err);
                 await this.taskQueue.markTaskFailed(task.id, errorMessage);
@@ -318,7 +374,7 @@ JSON:`;
             }
         }
 
-        return this.taskQueue.aggregateResults();
+        return this.taskQueue.aggregateResults(planId);
     }
 
     /** Expose current task plan for UI (e.g. progress indicator). */

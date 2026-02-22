@@ -156,6 +156,17 @@ export class BrowserMcpServer {
                     },
                     required: ["url"]
                 }
+            },
+            {
+                name: "youtube_search",
+                description: "Search YouTube for videos and navigate to the search results page.",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        query: { type: "string", description: "Search terms to find YouTube videos" }
+                    },
+                    required: ["query"]
+                }
             }
         ];
     }
@@ -163,18 +174,33 @@ export class BrowserMcpServer {
     public async callTool(name: string, args: any): Promise<any> {
         // Special case: Navigate doesn't STRICTLY need the debugger attached to the current tab
         // in fact, if we are on a chrome:// page, we can't attach, but we want to be able to navigate away!
-        if (name === "navigate") {
-            const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-            const tabId = tabs[0]?.id;
-            if (tabId) {
-                console.log(`[BrowserMcp] Navigating tab ${tabId} to: ${args.url}`);
-                await chrome.tabs.update(tabId, { url: args.url });
-                return { result: "Navigation started to " + args.url };
-            } else {
-                // Fallback: create new tab
-                const newTab = await chrome.tabs.create({ url: args.url });
-                return { result: "Created new tab and navigating to " + args.url };
+        if (name === "navigate" || name === "youtube_search") {
+            const targetUrl = name === "youtube_search"
+                ? `https://www.youtube.com/results?search_query=${encodeURIComponent(args.query)}`
+                : args.url as string;
+
+            // Robust tab resolution: side-panel is often the "lastFocusedWindow" active tab,
+            // so query multiple fallbacks to find the real content tab.
+            let tabId: number | undefined;
+
+            const [lastFocused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+            if (lastFocused?.id) tabId = lastFocused.id;
+
+            if (!tabId) {
+                const allActive = await chrome.tabs.query({ active: true });
+                tabId = allActive[0]?.id;
             }
+
+            if (tabId) {
+                console.log(`[BrowserMcp] Navigating tab ${tabId} to: ${targetUrl}`);
+                await chrome.tabs.update(tabId, { url: targetUrl });
+            } else {
+                await chrome.tabs.create({ url: targetUrl });
+            }
+
+            // Return 'message' so AgentRunner's early-break fires and the model
+            // doesn't generate a follow-up that calls navigate a second time.
+            return { message: `Navigated to ${targetUrl}`, url: targetUrl };
         }
 
         const debuggee = await this.attachToActiveTab();

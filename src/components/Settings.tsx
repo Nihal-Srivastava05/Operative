@@ -13,6 +13,7 @@ export function Settings() {
     const [maxSubtasks, setMaxSubtasks] = useState(DEFAULT_MAX_SUBTASKS);
     const [taskTimeoutSec, setTaskTimeoutSec] = useState(DEFAULT_TASK_TIMEOUT_SEC);
     const [autoRetryFailed, setAutoRetryFailed] = useState(false);
+    const [watchLaterAutosave, setWatchLaterAutosave] = useState(true);
 
     const loadServers = async () => {
         const record = await db.settings.get('mcp_servers');
@@ -32,9 +33,16 @@ export function Settings() {
         if (retry?.value !== undefined) setAutoRetryFailed(Boolean(retry.value));
     };
 
+    const loadWatchLaterSettings = async () => {
+        const result = await chrome.storage.local.get('watchlater_autosave_enabled');
+        // Default to true if not set
+        setWatchLaterAutosave(result.watchlater_autosave_enabled !== false);
+    };
+
     useEffect(() => {
         loadServers();
         loadTaskDecompositionSettings();
+        loadWatchLaterSettings();
     }, []);
 
     const addServer = async () => {
@@ -161,6 +169,26 @@ export function Settings() {
                         <span className="text-sm">Auto-retry failed tasks</span>
                     </label>
                 </div>
+            </div>
+
+            <div className="mb-6">
+                <h3 className="text-md font-semibold text-slate-300 mb-2">Watch Later</h3>
+                <p className="text-xs text-slate-500 mb-3">
+                    When enabled, a banner appears on each YouTube video asking whether to save it. Disable to stop all auto-save prompts.
+                </p>
+                <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                        type="checkbox"
+                        checked={watchLaterAutosave}
+                        onChange={async e => {
+                            const v = e.target.checked;
+                            setWatchLaterAutosave(v);
+                            await chrome.storage.local.set({ watchlater_autosave_enabled: v });
+                        }}
+                        className="rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span className="text-sm">Show save banner on YouTube videos</span>
+                </label>
             </div>
 
             <div className="mt-auto">
