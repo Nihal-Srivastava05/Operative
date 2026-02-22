@@ -59,7 +59,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 });
 
-// ── Tab-close → "Remove from Watch Later?" notification ──────────────────────
+// ── Tab-close → "Remove from Watch Later?" prompt in side panel ──────────────
 chrome.tabs.onRemoved.addListener(async (tabId) => {
     const key = TAB_KEY(tabId);
     const result = await chrome.storage.session.get(key);
@@ -69,29 +69,37 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
     const svc = WatchLaterService.getInstance();
     const item = await svc.getByVideoId(info.videoId);
-    // Only prompt if the video is saved and not yet watched
     if (!item || item.watchedAt) return;
 
-    chrome.notifications.create(`wl-close-${info.videoId}`, {
-        type: 'basic',
-        iconUrl: `https://i.ytimg.com/vi/${info.videoId}/mqdefault.jpg`,
-        title: 'Remove from Watch Later?',
-        message: info.title,
-        buttons: [{ title: 'Remove' }, { title: 'Keep' }],
-        requireInteraction: true,
-        priority: 2
-    });
+    const prompt = { videoId: info.videoId, title: info.title };
+
+    // Persist so the panel can pick it up even if it was closed when the tab closed.
+    await chrome.storage.session.set({ wl_pending_prompt: prompt });
+
+    // Also push live if the panel is already open.
+    chrome.runtime.sendMessage({ type: 'WATCHLATER_PROMPT_REMOVE', payload: prompt })
+        .catch(() => { /* panel not open — prompt will appear on next open */ });
 });
 
-chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) => {
-    if (!notifId.startsWith('wl-close-')) return;
-    chrome.notifications.clear(notifId);
-    if (buttonIndex === 0) { // "Remove"
-        const videoId = notifId.replace('wl-close-', '');
-        await WatchLaterService.getInstance().removeByVideoId(videoId);
-        console.log('[WatchLater] Removed on tab close:', videoId);
+// ── Handlers for Remove / Dismiss actions sent from the Chat UI ───────────────
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === 'WATCHLATER_DO_REMOVE') {
+        WatchLaterService.getInstance()
+            .removeByVideoId(message.payload.videoId)
+            .then(async () => {
+                await chrome.storage.session.remove('wl_pending_prompt');
+                console.log('[WatchLater] Removed on tab close:', message.payload.videoId);
+                sendResponse({ success: true });
+            })
+            .catch(err => sendResponse({ success: false, error: String(err) }));
+        return true;
     }
-    // buttonIndex === 1 → "Keep", do nothing
+    if (message.type === 'WATCHLATER_PROMPT_DISMISS') {
+        chrome.storage.session.remove('wl_pending_prompt')
+            .then(() => sendResponse({ success: true }))
+            .catch(() => sendResponse({ success: true }));
+        return true;
+    }
 });
 
 // ── Extension-to-Extension API ────────────────────────────────────────────────

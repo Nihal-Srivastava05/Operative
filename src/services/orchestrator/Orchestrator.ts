@@ -85,7 +85,7 @@ export class Orchestrator {
     }
 
     /** Reusable router: pick one candidate from the list (LLM + validation). Returns agent + refined task or null. */
-    private async routeRequest(message: string, candidates: Agent[]): Promise<{ agent: Agent; task: string } | null> {
+    private async routeRequest(message: string, candidates: Agent[], recentContext?: string): Promise<{ agent: Agent; task: string } | null> {
         if (candidates.length === 0) return null;
         if (candidates.length === 1) return { agent: candidates[0], task: message };
 
@@ -99,17 +99,22 @@ export class Orchestrator {
         let lastError = '';
 
         while (attempt < 2) {
+            const contextSection = recentContext
+                ? `\nPrevious assistant response (for context):\n"${recentContext.substring(0, 300)}"\n`
+                : '';
+
             const routerPrompt = `Task: Route the user request to the correct option.
 Response format: Valid JSON only.
 
 Available options:
 ${agentList}
-
+${contextSection}
 User Request: "${message}"
 
 Respond with a single JSON object: {"agentName":"<name from list OR None>","task":"<rewritten task or user request>"}
 - Choose from the list only. If none fit, use "None".
 - "task" must be actionable; if unsure, repeat the user request.
+- If the user request starts with "no" followed by a new instruction, ignore the "no" and use the instruction that follows.
 - Output ONLY the JSON.
 ${lastError ? `\nPrevious error: ${lastError}` : ''}
 
@@ -185,7 +190,7 @@ JSON:`;
         return null;
     }
 
-    public async handleUserMessage(message: string): Promise<{ response: string; agentName: string }> {
+    public async handleUserMessage(message: string, recentContext?: string): Promise<{ response: string; agentName: string }> {
         const rootCandidates = await this.getRootCandidates();
 
         if (rootCandidates.length === 0) {
@@ -233,7 +238,7 @@ JSON:`;
                 const response = await this.runner.run(children[0], message, this.mcpClients);
                 return { response, agentName: children[0].name };
             }
-            const routed = await this.routeRequest(message, children);
+            const routed = await this.routeRequest(message, children, recentContext);
             if (routed) {
                 const response = await this.runner.run(routed.agent, routed.task, this.mcpClients);
                 return { response, agentName: routed.agent.name };
@@ -250,7 +255,7 @@ JSON:`;
         }
 
         // Meta-level routing among root candidates (orchestrators + top-level workers)
-        let routed = await this.routeRequest(message, rootCandidates);
+        let routed = await this.routeRequest(message, rootCandidates, recentContext);
         if (!routed) {
             const fallback = await this.keywordFallback(message, rootCandidates);
             if (fallback) {

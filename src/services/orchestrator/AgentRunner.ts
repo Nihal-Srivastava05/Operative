@@ -141,6 +141,14 @@ export class AgentRunner {
             openUrl: 'navigate',
             go_to_url: 'navigate',
             goToUrl: 'navigate',
+            youtube_play: 'navigate',
+            youtubePlay: 'navigate',
+            play_youtube_video: 'navigate',
+            playYoutubeVideo: 'navigate',
+            play_video: 'navigate',
+            playVideo: 'navigate',
+            open_youtube_video: 'navigate',
+            openYoutubeVideo: 'navigate',
             search_youtube: 'youtube_search',
             youtubeSearch: 'youtube_search',
             youtube_search_videos: 'youtube_search'
@@ -186,10 +194,21 @@ export class AgentRunner {
             }
         }
 
-        if (toolName === 'navigate' && typeof a.url === 'string') {
-            const u = a.url.trim();
-            if (u && !u.startsWith('http://') && !u.startsWith('https://')) {
-                a.url = `https://${u}`;
+        if (toolName === 'navigate') {
+            // If model passed videoId instead of url (e.g. from youtube_play alias), build the URL.
+            if (!a.url && a.videoId && typeof a.videoId === 'string') {
+                a.url = `https://www.youtube.com/watch?v=${a.videoId}`;
+                delete a.videoId;
+            }
+            if (!a.url && a.videoUrl && typeof a.videoUrl === 'string') {
+                a.url = a.videoUrl;
+                delete a.videoUrl;
+            }
+            if (typeof a.url === 'string') {
+                const u = a.url.trim();
+                if (u && !u.startsWith('http://') && !u.startsWith('https://')) {
+                    a.url = `https://${u}`;
+                }
             }
         }
 

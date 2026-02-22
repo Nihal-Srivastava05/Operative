@@ -26,22 +26,36 @@ export class TaskDecomposer {
      * decomposed into subtasks. Uses the AI to analyze the request.
      */
     public async analyzeComplexity(message: string): Promise<DecompositionResult> {
+        // Short-circuit: patterns that are always single-agent — no need to spend an LLM call.
+        const single = message.trim().toLowerCase();
+        const singleAgentPatterns = [
+            /^(yes|yeah|yep|no|nope|ok|okay|sure|play|navigate|open\s*it?)[\s!.]*$/i, // short confirmations
+            /\bon\s+youtube\b/i,                              // "search X on youtube"
+            /^(search|find|look\s+up)\b/i,                   // "search X", "find X"
+            /^(navigate\s+to|go\s+to|open\s+url|open\s+https?)/i, // "navigate to X"
+        ];
+        if (singleAgentPatterns.some(p => p.test(single))) {
+            return { needsDecomposition: false, reasoning: 'Single-agent action.' };
+        }
+
         const prompt = `You are a task analyst. Decide if the following user request requires multiple distinct steps that should be handled by different specialized agents in sequence.
 
 User request: "${message}"
 
 Consider decomposition when:
 - The request explicitly asks for multiple things (e.g. "fetch X, then analyze Y, and summarize")
-- The request implies a pipeline (e.g. "research, compare, and report")
-- Different steps need different skills or tools (e.g. get data → analyze → format report)
+- The request implies a pipeline (e.g. "recommend a video then open it")
+- Different steps need different skills or tools (e.g. get data from database → navigate browser)
 
 Do NOT decompose when:
 - The request is a single question or action
 - One agent can reasonably handle the whole request
 - The request is vague or very short
+- The request is a YouTube search (e.g. "search X on youtube", "find X video on youtube") — one Browser Agent handles this in one step
+- The request is navigate/open a URL — one Browser Agent handles this in one step
 
 Respond with valid JSON only, no other text:
-{"needsDecomposition": true or false, "reasoning": "brief explanation"}
+{"needsDecomposition": true or false, "reasoning": "brief"}
 
 JSON:`;
 
@@ -50,12 +64,19 @@ JSON:`;
             const raw = await this.ai.generate(prompt, session);
             session.destroy();
 
-            const json = extractJson(raw, { logFailure: true });
+            const json = extractJson(raw, { logFailure: false });
             if (json && typeof json.needsDecomposition === 'boolean') {
                 return {
                     needsDecomposition: json.needsDecomposition,
                     reasoning: typeof json.reasoning === 'string' ? json.reasoning : ''
                 };
+            }
+
+            // Regex fallback: model often puts literal newlines inside the JSON string
+            // values (e.g. reasoning) which makes JSON.parse fail. Extract just the bool.
+            const boolMatch = raw.match(/"needsDecomposition"\s*:\s*(true|false)/);
+            if (boolMatch) {
+                return { needsDecomposition: boolMatch[1] === 'true', reasoning: '' };
             }
         } catch (e) {
             console.error('TaskDecomposer.analyzeComplexity failed', e);
@@ -109,8 +130,10 @@ Rules:
 - priority: 0 for first task, 1 for second, etc.
 - Keep descriptions clear and actionable. Include any relevant data (e.g. URLs) directly in the description.
 - IMPORTANT: Do NOT create a subtask whose only purpose is to "retrieve" or "get" data from another agent — outputs flow automatically. For example, if task 0 returns a URL, task 1 will receive it in context automatically.
-- IMPORTANT: Do NOT assign a task to an agent that doesn't have the right tools for it. A Browser Agent navigates/clicks; a Media/Knowledge agent retrieves data.
-- A "recommend then play" flow needs exactly 2 tasks: (1) get recommendation, (2) navigate to URL.
+- IMPORTANT: Do NOT assign a task to an agent that doesn't have the right tools for it. A Browser Agent navigates/clicks; a Media/Knowledge agent retrieves from databases.
+- IMPORTANT: Do NOT create a "show", "display", "navigate to", or "open" task that follows a youtube_search task — the search already navigates the browser. If the previous task searched YouTube, no follow-up navigation task is needed.
+- A "recommend then play" flow needs exactly 2 tasks: (1) Media Curator gets recommendation with URL, (2) Browser Agent navigates to that URL.
+- A "search X on youtube" request needs exactly 1 task: Browser Agent calls youtube_search. Do NOT add a Media Curator task before it.
 
 Respond with valid JSON only:
 {"tasks": [
@@ -167,6 +190,15 @@ JSON:`;
 
             // Sort by priority for consistent execution order
             tasks.sort((a, b) => a.priority - b.priority);
+
+            // Post-check: if every subtask goes to the same agent, decomposition adds no value.
+            // This catches cases like "search + show results" where both tasks hit Browser Agent.
+            const uniqueAgents = new Set(tasks.map(t => t.targetAgentId).filter(Boolean));
+            if (uniqueAgents.size <= 1) {
+                console.log('[TaskDecomposer] All subtasks assigned to same agent — collapsing to single task.');
+                return this.singleTaskFallback(message, workers);
+            }
+
             return tasks;
         } catch (e) {
             console.error('TaskDecomposer.decomposeTask failed', e);
