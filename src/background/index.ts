@@ -1,7 +1,11 @@
 import { WatchLaterService } from '../services/watchlater/WatchLaterService';
 
-// Placeholder for background services
 console.log('Operative Service Worker Running');
+
+// Tab-video tracking is stored in chrome.storage.session (not an in-memory Map)
+// because the MV3 service worker sleeps between events and loses all module-level state.
+// chrome.storage.session persists across SW sleep/wake cycles for the browser session.
+const TAB_KEY = (id: number) => `wl_tab_${id}`;
 
 // Setup Chrome side panel behavior
 chrome.sidePanel
@@ -14,6 +18,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'YOUTUBE_VIDEO_LOADED') {
         const svc = WatchLaterService.getInstance();
         const p = message.payload;
+        // Persist which video is live in this tab — survives SW sleep/wake
+        if (_sender.tab?.id != null) {
+            chrome.storage.session.set({
+                [TAB_KEY(_sender.tab.id)]: { videoId: p.videoId, title: p.title }
+            });
+        }
         svc.addVideo({
             url: p.url,
             videoId: p.videoId,
@@ -47,6 +57,41 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }).catch(err => sendResponse({ success: false, error: String(err) }));
         return true;
     }
+});
+
+// ── Tab-close → "Remove from Watch Later?" notification ──────────────────────
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+    const key = TAB_KEY(tabId);
+    const result = await chrome.storage.session.get(key);
+    const info = result[key] as { videoId: string; title: string } | undefined;
+    if (!info) return;
+    await chrome.storage.session.remove(key);
+
+    const svc = WatchLaterService.getInstance();
+    const item = await svc.getByVideoId(info.videoId);
+    // Only prompt if the video is saved and not yet watched
+    if (!item || item.watchedAt) return;
+
+    chrome.notifications.create(`wl-close-${info.videoId}`, {
+        type: 'basic',
+        iconUrl: `https://i.ytimg.com/vi/${info.videoId}/mqdefault.jpg`,
+        title: 'Remove from Watch Later?',
+        message: info.title,
+        buttons: [{ title: 'Remove' }, { title: 'Keep' }],
+        requireInteraction: true,
+        priority: 2
+    });
+});
+
+chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) => {
+    if (!notifId.startsWith('wl-close-')) return;
+    chrome.notifications.clear(notifId);
+    if (buttonIndex === 0) { // "Remove"
+        const videoId = notifId.replace('wl-close-', '');
+        await WatchLaterService.getInstance().removeByVideoId(videoId);
+        console.log('[WatchLater] Removed on tab close:', videoId);
+    }
+    // buttonIndex === 1 → "Keep", do nothing
 });
 
 // ── Extension-to-Extension API ────────────────────────────────────────────────

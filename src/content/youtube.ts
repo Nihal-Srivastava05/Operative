@@ -79,6 +79,10 @@ async function captureAndSend(): Promise<void> {
     const videoId = getVideoId();
     if (!videoId) { console.warn('[Operative/WL] captureAndSend: no videoId'); return; }
 
+    // Attach immediately — before the async duration poll — so the listener is
+    // in place even if the user navigates away while getDurationAsync is running.
+    attachCompletionListener(videoId);
+
     console.log('[Operative/WL] captureAndSend: collecting metadata for', videoId);
     const title    = getTitle();
     const channel  = getChannel();
@@ -95,8 +99,6 @@ async function captureAndSend(): Promise<void> {
     } catch (err) {
         console.error('[Operative/WL] captureAndSend: sendMessage failed', err);
     }
-
-    attachCompletionListener(videoId);
 }
 
 /**
@@ -196,8 +198,13 @@ function attachCompletionListener(videoId: string): void {
 
     const sendCompleted = () => {
         if (sent) return;
-        if (getVideoId() !== videoId) return;
+        const currentId = getVideoId();
+        // Block only if we're actively watching a *different* video.
+        // If currentId is null (navigated to home/non-watch page), still send —
+        // the ended/timeupdate events already fired while on the watch page.
+        if (currentId !== null && currentId !== videoId) return;
         sent = true;
+        console.log('[Operative/WL] video completed:', videoId);
         chrome.runtime.sendMessage({ type: 'YOUTUBE_VIDEO_COMPLETED', payload: { videoId } });
     };
 

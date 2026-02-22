@@ -7,7 +7,9 @@
         "storage",
         "sidePanel",
         "debugger",
-        "scripting"
+        "scripting",
+        "notifications",
+        "tabs"
     ],
     "host_permissions": [
         "<all_urls>"

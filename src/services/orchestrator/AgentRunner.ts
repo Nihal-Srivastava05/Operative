@@ -140,7 +140,10 @@ export class AgentRunner {
             open_url: 'navigate',
             openUrl: 'navigate',
             go_to_url: 'navigate',
-            goToUrl: 'navigate'
+            goToUrl: 'navigate',
+            search_youtube: 'youtube_search',
+            youtubeSearch: 'youtube_search',
+            youtube_search_videos: 'youtube_search'
         };
         const mapped = aliases[t] ?? aliases[tool] ?? null;
         if (mapped && allowedToolNames.has(mapped)) return mapped;
@@ -150,12 +153,25 @@ export class AgentRunner {
     private normalizeToolArgs(toolName: string, args: any): any {
         const a: any = args && typeof args === 'object' ? { ...args } : {};
 
-        // Generic lifts
+        // Tool-specific fixes — run BEFORE generic lifts so we don't destroy tool-native fields
+        if (toolName === 'youtube_search') {
+            // Recover 'query' from any alias the model might use.
+            // Note: the generic lift below maps query→text, so check 'text' first as it may
+            // already hold the original query value if this path is reached after a prior lift.
+            if (!a.query && a.text)          { a.query = a.text;          delete a.text; }
+            if (!a.query && a.search)        { a.query = a.search;        delete a.search; }
+            if (!a.query && a.q)             { a.query = a.q;             delete a.q; }
+            if (!a.query && a.search_query)  { a.query = a.search_query;  delete a.search_query; }
+            if (!a.query && a.input)         { a.query = a.input;         delete a.input; }
+        }
+
+        // Generic lifts (skip for tools that use 'query' as their primary field)
+        const usesQueryField = toolName === 'youtube_search';
         if (a.input && typeof a.input === 'string' && a.text === undefined) {
             a.text = a.input;
             delete a.input;
         }
-        if (a.query && typeof a.query === 'string' && a.text === undefined) {
+        if (!usesQueryField && a.query && typeof a.query === 'string' && a.text === undefined) {
             a.text = a.query;
             delete a.query;
         }
@@ -164,7 +180,6 @@ export class AgentRunner {
             delete a.value;
         }
 
-        // Tool-specific fixes
         if (toolName === 'type_input') {
             if (!a.selector && a.input && typeof a.input === 'object' && typeof a.input.selector === 'string') {
                 a.selector = a.input.selector;

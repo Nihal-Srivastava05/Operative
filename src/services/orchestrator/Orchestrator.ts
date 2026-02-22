@@ -302,6 +302,23 @@ JSON:`;
         const initialPlan = await this.taskQueue.getCurrentPlan();
         const planId = initialPlan?.id;
 
+        // Per-agent wall-clock timeout. Gemini Nano can stall indefinitely on ai.generate();
+        // this prevents the plan from hanging forever if a model call never resolves.
+        const AGENT_TIMEOUT_MS = 90_000;
+
+        // Reset any tasks left in_progress from a previous crashed/timed-out run.
+        // Without this, getNextTask() returns null (no pending tasks) and the plan
+        // immediately "completes" with stale results from the prior run.
+        const stalePlan = await this.taskQueue.getCurrentPlan();
+        if (stalePlan) {
+            for (const t of stalePlan.tasks) {
+                if (t.status === 'in_progress') {
+                    console.warn(`[Orchestrator] Resetting stale in_progress task: ${t.id}`);
+                    await this.taskQueue.markTaskFailed(t.id, 'Interrupted by previous session timeout or restart');
+                }
+            }
+        }
+
         while (!(await this.taskQueue.isPlanComplete())) {
             const task = await this.taskQueue.getNextTask();
             if (!task) break;
@@ -328,7 +345,15 @@ JSON:`;
                     ? `${task.description}\n\nContext from previous steps:\n${priorOutputs.join('\n\n')}`
                     : task.description;
 
-                const result = await this.runner.run(agent, taskDescription, this.mcpClients);
+                const result = await Promise.race([
+                    this.runner.run(agent, taskDescription, this.mcpClients),
+                    new Promise<string>((_, reject) =>
+                        setTimeout(
+                            () => reject(new Error(`Agent "${agent.name}" did not respond within ${AGENT_TIMEOUT_MS / 1000}s — Gemini Nano may be busy`)),
+                            AGENT_TIMEOUT_MS
+                        )
+                    )
+                ]);
                 await this.taskQueue.markTaskComplete(task.id, result);
             } catch (err) {
                 const errorMessage = err instanceof Error ? err.message : String(err);
