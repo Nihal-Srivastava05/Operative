@@ -350,16 +350,23 @@ JSON:`;
                     ? `${task.description}\n\nContext from previous steps:\n${priorOutputs.join('\n\n')}`
                     : task.description;
 
-                const result = await Promise.race([
-                    this.runner.run(agent, taskDescription, this.mcpClients),
-                    new Promise<string>((_, reject) =>
-                        setTimeout(
-                            () => reject(new Error(`Agent "${agent.name}" did not respond within ${AGENT_TIMEOUT_MS / 1000}s — Gemini Nano may be busy`)),
-                            AGENT_TIMEOUT_MS
-                        )
-                    )
-                ]);
-                await this.taskQueue.markTaskComplete(task.id, result);
+                let timeoutId: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    const result = await Promise.race([
+                        this.runner.run(agent, taskDescription, this.mcpClients),
+                        new Promise<string>((_, reject) => {
+                            timeoutId = setTimeout(
+                                () => reject(new Error(`Agent "${agent.name}" did not respond within ${AGENT_TIMEOUT_MS / 1000}s — Gemini Nano may be busy`)),
+                                AGENT_TIMEOUT_MS
+                            );
+                        })
+                    ]);
+                    clearTimeout(timeoutId);
+                    await this.taskQueue.markTaskComplete(task.id, result);
+                } catch (raceErr) {
+                    clearTimeout(timeoutId);
+                    throw raceErr;
+                }
             } catch (err) {
                 const errorMessage = err instanceof Error ? err.message : String(err);
                 await this.taskQueue.markTaskFailed(task.id, errorMessage);
