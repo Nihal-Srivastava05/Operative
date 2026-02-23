@@ -169,11 +169,16 @@ export class TaskQueue {
      * Aggregates results of all completed tasks into a single response string.
      * Marks the plan as completed. Call after isPlanComplete() is true.
      */
-    public async aggregateResults(): Promise<{ response: string; agentName: string }> {
-        let planRecord = await db.taskPlans
-            .where('status')
-            .equals('executing')
-            .first();
+    public async aggregateResults(planId?: string): Promise<{ response: string; agentName: string }> {
+        // Prefer explicit planId (passed before the while-loop nullifies activePlanId)
+        let planRecord = planId ? await db.taskPlans.get(planId) : undefined;
+
+        if (!planRecord) {
+            planRecord = await db.taskPlans
+                .where('status')
+                .equals('executing')
+                .first();
+        }
 
         if (!planRecord && this.activePlanId) {
             planRecord = await db.taskPlans.get(this.activePlanId);
